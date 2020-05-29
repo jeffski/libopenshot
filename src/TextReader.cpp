@@ -43,7 +43,7 @@ TextReader::TextReader() : width(1024), height(768), x_offset(0), y_offset(0), t
 	Close();
 }
 
-TextReader::TextReader(int width, int height, int x_offset, int y_offset, GravityType gravity, string text, string font, double size, string text_color, string background_color)
+TextReader::TextReader(int width, int height, int x_offset, int y_offset, GravityType gravity, std::string text, std::string font, double size, std::string text_color, std::string background_color)
 : width(width), height(height), x_offset(x_offset), y_offset(y_offset), text(text), font(font), size(size), text_color(text_color), background_color(background_color), is_open(false), gravity(gravity)
 {
 	// Open and Close the reader, to populate its attributes (such as height, width, etc...)
@@ -51,7 +51,7 @@ TextReader::TextReader(int width, int height, int x_offset, int y_offset, Gravit
 	Close();
 }
 
-void TextReader::SetTextBackgroundColor(string color) {
+void TextReader::SetTextBackgroundColor(std::string color) {
 	text_background_color = color;
 
 	// Open and Close the reader, to populate it's attributes (such as height, width, etc...) plus the text background color
@@ -127,7 +127,7 @@ void TextReader::Open()
 		info.height = image->size().height();
 		info.pixel_ratio.num = 1;
 		info.pixel_ratio.den = 1;
-		info.duration = 1;
+		info.duration = 60 * 60 * 1;  // 1 hour duration
 		info.fps.num = 30;
 		info.fps.den = 1;
 		info.video_timebase.num = 1;
@@ -187,14 +187,14 @@ std::shared_ptr<Frame> TextReader::GetFrame(int64_t requested_frame)
 }
 
 // Generate JSON string of this object
-string TextReader::Json() {
+std::string TextReader::Json() const {
 
 	// Return formatted string
 	return JsonValue().toStyledString();
 }
 
-// Generate Json::JsonValue for this object
-Json::Value TextReader::JsonValue() {
+// Generate Json::Value for this object
+Json::Value TextReader::JsonValue() const {
 
 	// Create root json object
 	Json::Value root = ReaderBase::JsonValue(); // get parent properties
@@ -216,24 +216,10 @@ Json::Value TextReader::JsonValue() {
 }
 
 // Load JSON string into this object
-void TextReader::SetJson(string value) {
-
-	// Parse JSON string into JSON objects
-	Json::Value root;
-	Json::CharReaderBuilder rbuilder;
-	Json::CharReader* reader(rbuilder.newCharReader());
-
-	string errors;
-	bool success = reader->parse( value.c_str(),
-                 value.c_str() + value.size(), &root, &errors );
-	delete reader;
-
-	if (!success)
-		// Raise exception
-		throw InvalidJSON("JSON could not be parsed (or is invalid)");
-
+void TextReader::SetJson(const std::string value) {
 	try
 	{
+		Json::Value root = openshot::stringToJson(value);
 		// Set all values that match
 		SetJsonValue(root);
 	}
@@ -244,8 +230,8 @@ void TextReader::SetJson(string value) {
 	}
 }
 
-// Load Json::JsonValue into this object
-void TextReader::SetJsonValue(Json::Value root) {
+// Load Json::Value into this object
+void TextReader::SetJsonValue(const Json::Value root) {
 
 	// Set parent data
 	ReaderBase::SetJsonValue(root);

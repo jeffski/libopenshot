@@ -35,8 +35,6 @@
 #include "Exceptions.h"
 #include "Json.h"
 
-using namespace std;
-
 namespace openshot
 {
 	/**
@@ -121,10 +119,10 @@ namespace openshot
 		void Initialize_RightHandle(float x, float y);
 
 		/// Get and Set JSON methods
-		string Json(); ///< Generate JSON string of this object
-		Json::Value JsonValue(); ///< Generate Json::JsonValue for this object
-		void SetJson(string value); ///< Load JSON string into this object
-		void SetJsonValue(Json::Value root); ///< Load Json::JsonValue into this object
+		std::string Json() const; ///< Generate JSON string of this object
+		Json::Value JsonValue() const; ///< Generate Json::Value for this object
+		void SetJson(const std::string value); ///< Load JSON string into this object
+		void SetJsonValue(const Json::Value root); ///< Load Json::Value into this object
 
 	};
 

@@ -29,18 +29,23 @@
  */
 
 #include "UnitTest++.h"
+// Prevent name clashes with juce::UnitTest
+#define DONT_SET_USING_JUCE_NAMESPACE 1
 #include "../include/OpenShot.h"
 
 using namespace std;
 using namespace openshot;
 
-TEST(FFmpegReader_Invalid_Path)
+SUITE(FFmpegReader)
+{
+
+TEST(Invalid_Path)
 {
 	// Check invalid path
 	CHECK_THROW(FFmpegReader(""), InvalidFile);
 }
 
-TEST(FFmpegReader_GetFrame_Before_Opening)
+TEST(GetFrame_Before_Opening)
 {
 	// Create a reader
 	stringstream path;
@@ -51,7 +56,7 @@ TEST(FFmpegReader_GetFrame_Before_Opening)
 	CHECK_THROW(r.GetFrame(1), ReaderClosed);
 }
 
-TEST(FFmpegReader_Check_Audio_File)
+TEST(Check_Audio_File)
 {
 	// Create a reader
 	stringstream path;
@@ -74,14 +79,14 @@ TEST(FFmpegReader_Check_Audio_File)
 	CHECK_CLOSE(0.0f, samples[50], 0.00001);
 	CHECK_CLOSE(0.0f, samples[100], 0.00001);
 	CHECK_CLOSE(0.0f, samples[200], 0.00001);
-	CHECK_CLOSE(0.160781f, samples[230], 0.00001);
-	CHECK_CLOSE(-0.06125f, samples[300], 0.00001);
+	CHECK_CLOSE(0.16406f, samples[230], 0.00001);
+	CHECK_CLOSE(-0.06250f, samples[300], 0.00001);
 
 	// Close reader
 	r.Close();
 }
 
-TEST(FFmpegReader_Check_Video_File)
+TEST(Check_Video_File)
 {
 	// Create a reader
 	stringstream path;
@@ -97,10 +102,10 @@ TEST(FFmpegReader_Check_Video_File)
 	int pixel_index = 112 * 4; // pixel 112 (4 bytes per pixel)
 
 	// Check image properties on scanline 10, pixel 112
-	CHECK_EQUAL(21, (int)pixels[pixel_index]);
-	CHECK_EQUAL(191, (int)pixels[pixel_index + 1]);
-	CHECK_EQUAL(0, (int)pixels[pixel_index + 2]);
-	CHECK_EQUAL(255, (int)pixels[pixel_index + 3]);
+	CHECK_CLOSE(21, (int)pixels[pixel_index], 5);
+	CHECK_CLOSE(191, (int)pixels[pixel_index + 1], 5);
+	CHECK_CLOSE(0, (int)pixels[pixel_index + 2], 5);
+	CHECK_CLOSE(255, (int)pixels[pixel_index + 3], 5);
 
 	// Check pixel function
 	CHECK_EQUAL(true, f->CheckPixel(10, 112, 21, 191, 0, 255, 5));
@@ -114,10 +119,10 @@ TEST(FFmpegReader_Check_Video_File)
 	pixel_index = 112 * 4; // pixel 112 (4 bytes per pixel)
 
 	// Check image properties on scanline 10, pixel 112
-	CHECK_EQUAL(0, (int)pixels[pixel_index]);
-	CHECK_EQUAL(96, (int)pixels[pixel_index + 1]);
-	CHECK_EQUAL(188, (int)pixels[pixel_index + 2]);
-	CHECK_EQUAL(255, (int)pixels[pixel_index + 3]);
+	CHECK_CLOSE(0, (int)pixels[pixel_index], 5);
+	CHECK_CLOSE(96, (int)pixels[pixel_index + 1], 5);
+	CHECK_CLOSE(188, (int)pixels[pixel_index + 2], 5);
+	CHECK_CLOSE(255, (int)pixels[pixel_index + 3], 5);
 
 	// Check pixel function
 	CHECK_EQUAL(true, f->CheckPixel(10, 112, 0, 96, 188, 255, 5));
@@ -127,7 +132,7 @@ TEST(FFmpegReader_Check_Video_File)
 	r.Close();
 }
 
-TEST(FFmpegReader_Seek)
+TEST(Seek)
 {
 	// Create a reader
 	stringstream path;
@@ -184,7 +189,23 @@ TEST(FFmpegReader_Seek)
 
 }
 
-TEST(FFmpegReader_Multiple_Open_and_Close)
+TEST(Frame_Rate)
+{
+	// Create a reader
+	stringstream path;
+	path << TEST_MEDIA_PATH << "sintel_trailer-720p.mp4";
+	FFmpegReader r(path.str());
+	r.Open();
+
+	// Verify detected frame rate
+	openshot::Fraction rate = r.info.fps;
+	CHECK_EQUAL(24, rate.num);
+	CHECK_EQUAL(1, rate.den);
+
+	r.Close();
+}
+
+TEST(Multiple_Open_and_Close)
 {
 	// Create a reader
 	stringstream path;
@@ -219,4 +240,6 @@ TEST(FFmpegReader_Multiple_Open_and_Close)
 	// Close reader
 	r.Close();
 }
+
+} // SUITE(FFmpegReader)
 

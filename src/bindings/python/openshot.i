@@ -56,61 +56,60 @@
 #endif
 %shared_ptr(juce::AudioSampleBuffer)
 %shared_ptr(openshot::Frame)
-%shared_ptr(Frame)
 
 %{
 #include "OpenShotVersion.h"
-#include "../../../include/ReaderBase.h"
-#include "../../../include/WriterBase.h"
-#include "../../../include/CacheBase.h"
-#include "../../../include/CacheDisk.h"
-#include "../../../include/CacheMemory.h"
-#include "../../../include/ChannelLayouts.h"
-#include "../../../include/ChunkReader.h"
-#include "../../../include/ChunkWriter.h"
-#include "../../../include/ClipBase.h"
-#include "../../../include/Clip.h"
-#include "../../../include/Coordinate.h"
-#include "../../../include/Color.h"
-#include "../../../include/DummyReader.h"
-#include "../../../include/EffectBase.h"
-#include "../../../include/Effects.h"
-#include "../../../include/EffectInfo.h"
-#include "../../../include/Enums.h"
-#include "../../../include/Exceptions.h"
-#include "../../../include/FFmpegReader.h"
-#include "../../../include/FFmpegWriter.h"
-#include "../../../include/Fraction.h"
-#include "../../../include/Frame.h"
-#include "../../../include/FrameMapper.h"
-#include "../../../include/PlayerBase.h"
-#include "../../../include/Point.h"
-#include "../../../include/Profiles.h"
-#include "../../../include/QtHtmlReader.h"
-#include "../../../include/QtImageReader.h"
-#include "../../../include/QtPlayer.h"
-#include "../../../include/QtTextReader.h"
-#include "../../../include/KeyFrame.h"
-#include "../../../include/RendererBase.h"
-#include "../../../include/Settings.h"
-#include "../../../include/Timeline.h"
-#include "../../../include/ZmqLogger.h"
-#include "../../../include/AudioDeviceInfo.h"
+#include "ReaderBase.h"
+#include "WriterBase.h"
+#include "CacheBase.h"
+#include "CacheDisk.h"
+#include "CacheMemory.h"
+#include "ChannelLayouts.h"
+#include "ChunkReader.h"
+#include "ChunkWriter.h"
+#include "ClipBase.h"
+#include "Clip.h"
+#include "Coordinate.h"
+#include "Color.h"
+#include "DummyReader.h"
+#include "EffectBase.h"
+#include "Effects.h"
+#include "EffectInfo.h"
+#include "Enums.h"
+#include "Exceptions.h"
+#include "FFmpegReader.h"
+#include "FFmpegWriter.h"
+#include "Fraction.h"
+#include "Frame.h"
+#include "FrameMapper.h"
+#include "PlayerBase.h"
+#include "Point.h"
+#include "Profiles.h"
+#include "QtHtmlReader.h"
+#include "QtImageReader.h"
+#include "QtPlayer.h"
+#include "QtTextReader.h"
+#include "KeyFrame.h"
+#include "RendererBase.h"
+#include "Settings.h"
+#include "Timeline.h"
+#include "ZmqLogger.h"
+#include "AudioDeviceInfo.h"
 
 %}
 
 #ifdef USE_BLACKMAGIC
 	%{
-		#include "../../../include/DecklinkReader.h"
-		#include "../../../include/DecklinkWriter.h"
+		#include "DecklinkReader.h"
+		#include "DecklinkWriter.h"
 	%}
 #endif
 
 #ifdef USE_IMAGEMAGICK
 	%{
-		#include "../../../include/ImageReader.h"
-		#include "../../../include/ImageWriter.h"
-		#include "../../../include/TextReader.h"
+		#include "ImageReader.h"
+		#include "ImageWriter.h"
+		#include "TextReader.h"
 	%}
 #endif
 
@@ -125,86 +124,118 @@
 	}
 }
 
+/* Instantiate the required template specializations */
+%template() std::map<std::string, int>;
+
+/* Make openshot.Fraction more Pythonic */
+%extend openshot::Fraction {
+%{
+	#include <sstream>
+	#include <map>
+%}
+	double __float__() {
+		return $self->ToDouble();
+	}
+	int __int__() {
+		return $self->ToInt();
+	}
+	std::map<std::string, int> GetMap() {
+		std::map<std::string, int> map1;
+		map1.insert({"num", $self->num});
+		map1.insert({"den", $self->den});
+		return map1;
+	}
+	std::string __repr__() {
+		std::ostringstream result;
+		result << $self->num << ":" << $self->den;
+		return result.str();
+  }
+}
+
 %extend openshot::OpenShotVersion {
-    // Give the struct a string representation
+        // Give the struct a string representation
 	const std::string __str__() {
 		return std::string(OPENSHOT_VERSION_FULL);
+	}
+	// And a repr for interactive use
+	const std::string __repr__() {
+		std::ostringstream result;
+		result << "OpenShotVersion('" << OPENSHOT_VERSION_FULL << "')";
+		return result.str();
 	}
 }
 
 %include "OpenShotVersion.h"
-%include "../../../include/ReaderBase.h"
-%include "../../../include/WriterBase.h"
-%include "../../../include/CacheBase.h"
-%include "../../../include/CacheDisk.h"
-%include "../../../include/CacheMemory.h"
-%include "../../../include/ChannelLayouts.h"
-%include "../../../include/ChunkReader.h"
-%include "../../../include/ChunkWriter.h"
-%include "../../../include/ClipBase.h"
-%include "../../../include/Clip.h"
-%include "../../../include/Coordinate.h"
-%include "../../../include/Color.h"
+%include "ReaderBase.h"
+%include "WriterBase.h"
+%include "CacheBase.h"
+%include "CacheDisk.h"
+%include "CacheMemory.h"
+%include "ChannelLayouts.h"
+%include "ChunkReader.h"
+%include "ChunkWriter.h"
+%include "ClipBase.h"
+%include "Clip.h"
+%include "Coordinate.h"
+%include "Color.h"
 #ifdef USE_BLACKMAGIC
-	%include "../../../include/DecklinkReader.h"
-	%include "../../../include/DecklinkWriter.h"
+	%include "DecklinkReader.h"
+	%include "DecklinkWriter.h"
 #endif
-%include "../../../include/DummyReader.h"
-%include "../../../include/EffectBase.h"
-%include "../../../include/Effects.h"
-%include "../../../include/EffectInfo.h"
-%include "../../../include/Enums.h"
-%include "../../../include/Exceptions.h"
-%include "../../../include/FFmpegReader.h"
-%include "../../../include/FFmpegWriter.h"
-%include "../../../include/Fraction.h"
-%include "../../../include/Frame.h"
-%include "../../../include/FrameMapper.h"
-%include "../../../include/PlayerBase.h"
-%include "../../../include/Point.h"
-%include "../../../include/Profiles.h"
-%include "../../../include/QtHtmlReader.h"
-%include "../../../include/QtImageReader.h"
-%include "../../../include/QtPlayer.h"
-%include "../../../include/QtTextReader.h"
-%include "../../../include/KeyFrame.h"
-%include "../../../include/RendererBase.h"
-%include "../../../include/Settings.h"
-%include "../../../include/Timeline.h"
-%include "../../../include/ZmqLogger.h"
-%include "../../../include/AudioDeviceInfo.h"
+%include "DummyReader.h"
+%include "EffectBase.h"
+%include "Effects.h"
+%include "EffectInfo.h"
+%include "Enums.h"
+%include "Exceptions.h"
+%include "FFmpegReader.h"
+%include "FFmpegWriter.h"
+%include "Fraction.h"
+%include "Frame.h"
+%include "FrameMapper.h"
+%include "PlayerBase.h"
+%include "Point.h"
+%include "Profiles.h"
+%include "QtHtmlReader.h"
+%include "QtImageReader.h"
+%include "QtPlayer.h"
+%include "QtTextReader.h"
+%include "KeyFrame.h"
+%include "RendererBase.h"
+%include "Settings.h"
+%include "Timeline.h"
+%include "ZmqLogger.h"
+%include "AudioDeviceInfo.h"
 
 #ifdef USE_IMAGEMAGICK
-	%include "../../../include/ImageReader.h"
-	%include "../../../include/ImageWriter.h"
-	%include "../../../include/TextReader.h"
+	%include "ImageReader.h"
+	%include "ImageWriter.h"
+	%include "TextReader.h"
 #endif
 
 /* Effects */
-%include "../../../include/effects/Bars.h"
-%include "../../../include/effects/Blur.h"
-%include "../../../include/effects/Brightness.h"
-%include "../../../include/effects/ChromaKey.h"
-%include "../../../include/effects/ColorShift.h"
-%include "../../../include/effects/Crop.h"
-%include "../../../include/effects/Deinterlace.h"
-%include "../../../include/effects/Hue.h"
-%include "../../../include/effects/Mask.h"
-%include "../../../include/effects/Negate.h"
-%include "../../../include/effects/Pixelate.h"
-%include "../../../include/effects/Saturation.h"
-%include "../../../include/effects/Shift.h"
-%include "../../../include/effects/Wave.h"
+%include "effects/Bars.h"
+%include "effects/Blur.h"
+%include "effects/Brightness.h"
+%include "effects/ChromaKey.h"
+%include "effects/ColorShift.h"
+%include "effects/Crop.h"
+%include "effects/Deinterlace.h"
+%include "effects/Hue.h"
+%include "effects/Mask.h"
+%include "effects/Negate.h"
+%include "effects/Pixelate.h"
+%include "effects/Saturation.h"
+%include "effects/Shift.h"
+%include "effects/Wave.h"
 
 
 /* Wrap std templates (list, vector, etc...) */
-namespace std {
- %template(ClipList) list<Clip *>;
- %template(EffectBaseList) list<EffectBase *>;
- %template(CoordinateVector) vector<Coordinate>;
- %template(PointsVector) vector<Point>;
- %template(FieldVector) vector<Field>;
- %template(MappedFrameVector) vector<MappedFrame>;
- %template(MappedMetadata) map<string, string>;
- %template(AudioDeviceInfoVector) vector<AudioDeviceInfo>;
-}
+%template(ClipList) std::list<openshot::Clip *>;
+%template(EffectBaseList) std::list<openshot::EffectBase *>;
+%template(CoordinateVector) std::vector<openshot::Coordinate>;
+%template(PointsVector) std::vector<openshot::Point>;
+%template(FieldVector) std::vector<openshot::Field>;
+%template(MappedFrameVector) std::vector<openshot::MappedFrame>;
+%template(MappedMetadata) std::map<std::string, std::string>;
+%template(AudioDeviceInfoVector) std::vector<openshot::AudioDeviceInfo>;

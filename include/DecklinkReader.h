@@ -50,8 +50,6 @@
 #include "Frame.h"
 #include "DecklinkInput.h"
 
-using namespace std;
-
 namespace openshot
 {
 
@@ -117,13 +115,13 @@ namespace openshot
 		bool IsOpen() { return is_open; };
 
 		/// Return the type name of the class
-		string Name() { return "DecklinkReader"; };
+		std::string Name() { return "DecklinkReader"; };
 
 		/// Get and Set JSON methods
-		string Json(); ///< Generate JSON string of this object
-		void SetJson(string value); ///< Load JSON string into this object
-		Json::Value JsonValue(); ///< Generate Json::JsonValue for this object
-		void SetJsonValue(Json::Value root); ///< Load Json::JsonValue into this object
+		std::string Json() const override; ///< Generate JSON string of this object
+		void SetJson(const std::string value); ///< Load JSON string into this object
+		Json::Value JsonValue() const; ///< Generate Json::Value for this object
+		void SetJsonValue(const Json::Value root); ///< Load Json::Value into this object
 
 		/// Open device and video stream - which is called by the constructor automatically
 		void Open();

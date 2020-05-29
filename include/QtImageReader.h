@@ -40,8 +40,6 @@
 #include "Exceptions.h"
 #include "ReaderBase.h"
 
-using namespace std;
-
 namespace openshot
 {
 
@@ -67,7 +65,7 @@ namespace openshot
 	class QtImageReader : public ReaderBase
 	{
 	private:
-		string path;
+		QString path;
 		std::shared_ptr<QImage> image;			///> Original image (full quality)
 		std::shared_ptr<QImage> cached_image;	///> Scaled for performance
 		bool is_open;	///> Is Reader opened
@@ -77,42 +75,42 @@ namespace openshot
 
 		/// Constructor for QtImageReader.  This automatically opens the media file and loads
 		/// frame 1, or it throws one of the following exceptions.
-		QtImageReader(string path);
+		QtImageReader(std::string path);
 
 		/// Constructor for QtImageReader.  This only opens the media file to inspect its properties
 		/// if inspect_reader=true. When not inspecting the media file, it's much faster, and useful
 		/// when you are inflating the object using JSON after instantiating it.
-		QtImageReader(string path, bool inspect_reader);
+		QtImageReader(std::string path, bool inspect_reader);
 
 		virtual ~QtImageReader();
 
 		/// Close File
-		void Close();
+		void Close() override;
 
 		/// Get the cache object used by this reader (always returns NULL for this object)
-		CacheMemory* GetCache() { return NULL; };
+		CacheMemory* GetCache() override { return NULL; };
 
 		/// Get an openshot::Frame object for a specific frame number of this reader.  All numbers
 		/// return the same Frame, since they all share the same image data.
 		///
 		/// @returns The requested frame (containing the image)
 		/// @param requested_frame The frame number that is requested.
-		std::shared_ptr<Frame> GetFrame(int64_t requested_frame);
+		std::shared_ptr<Frame> GetFrame(int64_t requested_frame) override;
 
 		/// Determine if reader is open or closed
-		bool IsOpen() { return is_open; };
+		bool IsOpen() override { return is_open; };
 
 		/// Return the type name of the class
-		string Name() { return "QtImageReader"; };
+		std::string Name() override { return "QtImageReader"; };
 
 		/// Get and Set JSON methods
-		string Json(); ///< Generate JSON string of this object
-		void SetJson(string value); ///< Load JSON string into this object
-		Json::Value JsonValue(); ///< Generate Json::JsonValue for this object
-		void SetJsonValue(Json::Value root); ///< Load Json::JsonValue into this object
+		std::string Json() const override; ///< Generate JSON string of this object
+		void SetJson(const std::string value) override; ///< Load JSON string into this object
+		Json::Value JsonValue() const override; ///< Generate Json::Value for this object
+		void SetJsonValue(const Json::Value root) override; ///< Load Json::Value into this object
 
 		/// Open File - which is called by the constructor automatically
-		void Open();
+		void Open() override;
 	};
 
 }

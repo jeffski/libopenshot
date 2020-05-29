@@ -235,7 +235,7 @@ void FrameMapper::Init()
 	int64_t start_samples_frame = 1;
 	int start_samples_position = 0;
 
-	for (int64_t field = 1; field <= fields.size(); field++)
+	for (std::vector<Field>::size_type field = 1; field <= fields.size(); field++)
 	{
 		// Get the current field
 		Field f = fields[field - 1];
@@ -337,7 +337,7 @@ MappedFrame FrameMapper::GetMappedFrame(int64_t TargetFrameNumber)
 		// frame too small, return error
 		throw OutOfBoundsFrame("An invalid frame was requested.", TargetFrameNumber, frames.size());
 
-	else if (TargetFrameNumber > frames.size())
+	else if (TargetFrameNumber > (int64_t)frames.size())
 		// frame too large, set to end frame
 		TargetFrameNumber = frames.size();
 
@@ -675,14 +675,14 @@ void FrameMapper::Close()
 
 
 // Generate JSON string of this object
-string FrameMapper::Json() {
+std::string FrameMapper::Json() const {
 
 	// Return formatted string
 	return JsonValue().toStyledString();
 }
 
-// Generate Json::JsonValue for this object
-Json::Value FrameMapper::JsonValue() {
+// Generate Json::Value for this object
+Json::Value FrameMapper::JsonValue() const {
 
 	// Create root json object
 	Json::Value root = ReaderBase::JsonValue(); // get parent properties
@@ -693,24 +693,12 @@ Json::Value FrameMapper::JsonValue() {
 }
 
 // Load JSON string into this object
-void FrameMapper::SetJson(string value) {
+void FrameMapper::SetJson(const std::string value) {
 
 	// Parse JSON string into JSON objects
-	Json::Value root;
-	Json::CharReaderBuilder rbuilder;
-	Json::CharReader* reader(rbuilder.newCharReader());
-
-	string errors;
-	bool success = reader->parse( value.c_str(),
-                 value.c_str() + value.size(), &root, &errors );
-	delete reader;
-
-	if (!success)
-		// Raise exception
-		throw InvalidJSON("JSON could not be parsed (or is invalid)");
-
 	try
 	{
+		const Json::Value root = openshot::stringToJson(value);
 		// Set all values that match
 		SetJsonValue(root);
 	}
@@ -721,8 +709,8 @@ void FrameMapper::SetJson(string value) {
 	}
 }
 
-// Load Json::JsonValue into this object
-void FrameMapper::SetJsonValue(Json::Value root) {
+// Load Json::Value into this object
+void FrameMapper::SetJsonValue(const Json::Value root) {
 
 	// Set parent data
 	ReaderBase::SetJsonValue(root);
@@ -797,10 +785,23 @@ void FrameMapper::ResampleMappedAudio(std::shared_ptr<Frame> frame, int64_t orig
 	// Create a new array (to hold all S16 audio samples for the current queued frames)
  	int16_t* frame_samples = (int16_t*) av_malloc(sizeof(int16_t)*total_frame_samples);
 
-	// Translate audio sample values back to 16 bit integers
-	for (int s = 0; s < total_frame_samples; s++)
-		// Translate sample value and copy into buffer
-		frame_samples[s] = int(frame_samples_float[s] * (1 << 15));
+	// Translate audio sample values back to 16 bit integers with saturation
+	float valF;
+	int16_t conv;
+	const int16_t max16 = 32767;
+	const int16_t min16 = -32768;
+	for (int s = 0; s < total_frame_samples; s++) {
+		valF = frame_samples_float[s] * (1 << 15);
+		if (valF > max16)
+			conv = max16;
+		else if (valF < min16)
+			conv = min16;
+		else
+			conv = int(valF + 32768.5) - 32768; // +0.5 is for rounding
+
+		// Copy into buffer
+		frame_samples[s] = conv;
+	}
 
 
 	// Deallocate float array
@@ -820,7 +821,7 @@ void FrameMapper::ResampleMappedAudio(std::shared_ptr<Frame> frame, int64_t orig
 
 	if (error_code < 0)
 	{
-		ZmqLogger::Instance()->AppendDebugMethod("FrameMapper::ResampleMappedAudio ERROR [" + (string)av_err2str(error_code) + "]", "error_code", error_code);
+		ZmqLogger::Instance()->AppendDebugMethod("FrameMapper::ResampleMappedAudio ERROR [" + (std::string)av_err2str(error_code) + "]", "error_code", error_code);
 		throw ErrorEncodingVideo("Error while resampling audio in frame mapper", frame->number);
 	}
 

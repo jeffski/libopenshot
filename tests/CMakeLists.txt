@@ -24,170 +24,129 @@
 # along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
 ################################################################################
 
-# Pick up our include directories from the parent context
-include_directories(${OPENSHOT_INCLUDE_DIRS})
-
-SET(TEST_MEDIA_PATH "${PROJECT_SOURCE_DIR}/src/examples/")
+# Test media path, used by unit tests for input data
+file(TO_NATIVE_PATH "${PROJECT_SOURCE_DIR}/src/examples/" TEST_MEDIA_PATH)
+add_definitions( -DTEST_MEDIA_PATH="${TEST_MEDIA_PATH}" )
 
 ################ WINDOWS ##################
 # Set some compiler options for Windows
 # required for libopenshot-audio headers
-IF (WIN32)
-	STRING(REPLACE "/" "\\\\" TEST_MEDIA_PATH TEST_MEDIA_PATH)
+if(WIN32)
 	add_definitions( -DIGNORE_JUCE_HYPOT=1 )
-	SET(CMAKE_CXX_FLAGS " ${CMAKE_CXX_FLAGS} -include cmath")
-ENDIF(WIN32)
-
-add_definitions( -DTEST_MEDIA_PATH="${TEST_MEDIA_PATH}" )
+	set(CMAKE_CXX_FLAGS " ${CMAKE_CXX_FLAGS} -include cmath")
+endif()
 
 ################### UNITTEST++ #####################
 # Find UnitTest++ libraries (used for unit testing)
-FIND_PACKAGE(UnitTest++ REQUIRED)
+find_package(UnitTest++)
+
+if (NOT UnitTest++_FOUND)
+  set(TESTS_ENABLED OFF PARENT_SCOPE)
+  return()
+endif()
 
 # Include UnitTest++ headers (needed for compile)
-include_directories(${UNITTEST++_INCLUDE_DIR})
+include_directories(${UnitTest++_INCLUDE_DIRS})
+
+set_package_properties(UnitTest++ PROPERTIES
+  TYPE RECOMMENDED
+  PURPOSE "Unit testing framework")
 
 ################ IMAGE MAGICK ##################
 # Set the Quantum Depth that ImageMagick was built with (default to 16 bits)
-IF (MAGICKCORE_QUANTUM_DEPTH)
+if(MAGICKCORE_QUANTUM_DEPTH)
 	add_definitions( -DMAGICKCORE_QUANTUM_DEPTH=${MAGICKCORE_QUANTUM_DEPTH} )
-ELSE (MAGICKCORE_QUANTUM_DEPTH)
+else()
 	add_definitions( -DMAGICKCORE_QUANTUM_DEPTH=16 )
-ENDIF (MAGICKCORE_QUANTUM_DEPTH)
-IF (MAGICKCORE_HDRI_ENABLE)
+endif()
+
+if(MAGICKCORE_HDRI_ENABLE)
 	add_definitions( -DMAGICKCORE_HDRI_ENABLE=${MAGICKCORE_HDRI_ENABLE} )
-ELSE (MAGICKCORE_HDRI_ENABLE)
+else()
 	add_definitions( -DMAGICKCORE_HDRI_ENABLE=0 )
-ENDIF (MAGICKCORE_HDRI_ENABLE)
-IF (OPENSHOT_IMAGEMAGICK_COMPATIBILITY)
+endif()
+
+if(OPENSHOT_IMAGEMAGICK_COMPATIBILITY)
 	add_definitions( -DOPENSHOT_IMAGEMAGICK_COMPATIBILITY=${OPENSHOT_IMAGEMAGICK_COMPATIBILITY} )
-ELSE (OPENSHOT_IMAGEMAGICK_COMPATIBILITY)
+else()
 	add_definitions( -DOPENSHOT_IMAGEMAGICK_COMPATIBILITY=0 )
-ENDIF (OPENSHOT_IMAGEMAGICK_COMPATIBILITY)
+endif()
 
 # Find the ImageMagick++ library
-FIND_PACKAGE(ImageMagick COMPONENTS Magick++ MagickWand MagickCore)
-IF (ImageMagick_FOUND)
+find_package(ImageMagick COMPONENTS Magick++ MagickWand MagickCore)
+if(ImageMagick_FOUND)
 	# Include ImageMagick++ headers (needed for compile)
 	include_directories(${ImageMagick_INCLUDE_DIRS})
 
 	# define a global var (used in the C++)
 	add_definitions( -DUSE_IMAGEMAGICK=1 )
-	SET(CMAKE_SWIG_FLAGS "-DUSE_IMAGEMAGICK=1")
-
-ENDIF (ImageMagick_FOUND)
-
-################### FFMPEG #####################
-# Find FFmpeg libraries (used for video encoding / decoding)
-FIND_PACKAGE(FFmpeg REQUIRED)
-
-foreach(ffmpeg_comp AVCODEC AVDEVICE AVFORMAT AVFILTER AVUTIL POSTPROC SWSCALE SWRESAMPLE AVRESAMPLE)
-    if(${ffmpeg_comp}_FOUND)
-        # Include FFmpeg headers (needed for compile)
-        list(APPEND FF_INCLUDES ${${ffmpeg_comp}_INCLUDE_DIRS})
-        add_definitions(${${ffmpeg_comp}_DEFINITIONS})
-    endif()
-endforeach()
-list(REMOVE_DUPLICATES FF_INCLUDES)
-include_directories(${FF_INCLUDES})
+	set(CMAKE_SWIG_FLAGS "-DUSE_IMAGEMAGICK=1")
+endif()
 
 ################# LIBOPENSHOT-AUDIO ###################
 # Find JUCE-based openshot Audio libraries
-FIND_PACKAGE(OpenShotAudio 0.1.8 REQUIRED)
+find_package(OpenShotAudio 0.2.0 REQUIRED)
 
 # Include Juce headers (needed for compile)
 include_directories(${LIBOPENSHOT_AUDIO_INCLUDE_DIRS})
 
-################# QT5 ###################
-# Find QT5 libraries
-foreach(qt_lib Qt5Widgets Qt5Core Qt5Gui Qt5Multimedia Qt5MultimediaWidgets)
-    find_package(${qt_lib} REQUIRED)
-    # Header files
-    list(APPEND QT_INCLUDES ${${qt_lib}_INCLUDE_DIRS})
-    # Compiler definitions
-    add_definitions(${${qt_lib}_DEFINITIONS})
-    # Other CFLAGS
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${${qt_lib}_EXECUTABLE_COMPILE_FLAGS}")
-endforeach()
-list(REMOVE_DUPLICATES QT_INCLUDES)
-include_directories(${QT_INCLUDES})
-
-# Manually moc Qt files
-qt5_wrap_cpp(MOC_FILES ${QT_HEADER_FILES})
-
 
 ################# BLACKMAGIC DECKLINK ###################
-IF (ENABLE_BLACKMAGIC)
+if(ENABLE_BLACKMAGIC)
 	# Find BlackMagic DeckLinkAPI libraries
-	FIND_PACKAGE(BlackMagic)
+	find_package(BlackMagic)
 
-	IF (BLACKMAGIC_FOUND)
+	if(BLACKMAGIC_FOUND)
 		# Include Blackmagic headers (needed for compile)
 		include_directories(${BLACKMAGIC_INCLUDE_DIR})
-	ENDIF (BLACKMAGIC_FOUND)
-ENDIF (ENABLE_BLACKMAGIC)
+	endif()
+endif()
 
-################### OPENMP #####################
-# Check for OpenMP (used for multi-core processing)
-FIND_PACKAGE(OpenMP)
 
-if (OPENMP_FOUND)
-   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS} ")
-endif(OPENMP_FOUND)
+###############  SET TEST SOURCE FILES  #################
+set(OPENSHOT_TEST_FILES
+  Cache_Tests.cpp
+  Clip_Tests.cpp
+  Color_Tests.cpp
+  Coordinate_Tests.cpp
+  ReaderBase_Tests.cpp
+  ImageWriter_Tests.cpp
+  FFmpegReader_Tests.cpp
+  FFmpegWriter_Tests.cpp
+  Fraction_Tests.cpp
+  Frame_Tests.cpp
+  FrameMapper_Tests.cpp
+  KeyFrame_Tests.cpp
+  Point_Tests.cpp
+  Settings_Tests.cpp
+  Timeline_Tests.cpp )
 
-################### ZEROMQ #####################
-# Find ZeroMQ library (used for socket communication & logging)
-FIND_PACKAGE(ZMQ REQUIRED)
+################ TESTER EXECUTABLE #################
+# Create unit test executable (openshot-test)
+message (STATUS "Tests enabled, test executable will be built as tests/openshot-test")
+add_executable(openshot-test
+  tests.cpp
+  ${OPENSHOT_TEST_FILES} )
 
-# Include ZeroMQ headers (needed for compile)
-include_directories(${ZMQ_INCLUDE_DIRS})
+# Link libraries to the new executable
+target_link_libraries(openshot-test openshot ${UnitTest++_LIBRARIES})
 
-################### RESVG #####################
-# Find resvg library (used for rendering svg files)
-FIND_PACKAGE(RESVG)
+##### RUNNING TESTS (make os_test / make test) #####
+# Hook up the 'make os_test' target to the 'openshot-test' executable
+add_custom_target(os_test COMMAND openshot-test)
 
-# Include resvg headers (optional SVG library)
-if (RESVG_FOUND)
-	include_directories(${RESVG_INCLUDE_DIRS})
-endif(RESVG_FOUND)
-
-################### JSONCPP #####################
-# Include jsoncpp headers (needed for JSON parsing)
-if (USE_SYSTEM_JSONCPP)
-	find_package(JsonCpp REQUIRED)
-	include_directories(${JSONCPP_INCLUDE_DIRS})
+# Also hook up 'make test', if possible
+# This requires CMake 3.11+, where the CMP0037 policy
+# configured to 'NEW' mode will not reserve target names
+# unless the corresponding feature is actually used
+if (POLICY CMP0037)
+	cmake_policy(SET CMP0037 NEW)
+endif()
+if (CMAKE_VERSION VERSION_GREATER 3.11)
+	message(STATUS "Cmake 3.11+ detected, enabling 'test' target")
+	add_custom_target(test COMMAND openshot-test)
+	set(TEST_TARGET_NAME "test")
 else()
-	include_directories("../thirdparty/jsoncpp")
-endif(USE_SYSTEM_JSONCPP)
-
-IF (NOT DISABLE_TESTS)
-	###############  SET TEST SOURCE FILES  #################
-	SET ( OPENSHOT_TEST_FILES tests.cpp
-		   Cache_Tests.cpp
-		   Clip_Tests.cpp
-		   Color_Tests.cpp
-		   Coordinate_Tests.cpp
-		   ReaderBase_Tests.cpp
-		   ImageWriter_Tests.cpp
-		   FFmpegReader_Tests.cpp
-		   FFmpegWriter_Tests.cpp
-		   Fraction_Tests.cpp
-		   FrameMapper_Tests.cpp
-		   KeyFrame_Tests.cpp
-		   Point_Tests.cpp
-		   Settings_Tests.cpp
-		   Timeline_Tests.cpp )
-
-	################ TESTER EXECUTABLE #################
-	# Create unit test executable (openshot-test)
-	add_executable(openshot-test
-				   tests.cpp
-				   ${OPENSHOT_TEST_FILES} )
-
-	# Link libraries to the new executable
-	target_link_libraries(openshot-test openshot ${UNITTEST++_LIBRARY})
-
-	#################### MAKE TEST ######################
-	# Hook up the 'make os_test' target to the 'openshot-test' executable
-	ADD_CUSTOM_TARGET(os_test COMMAND openshot-test)
-ENDIF (NOT DISABLE_TESTS)
+  set(TEST_TARGET_NAME "os_test")
+endif()
+add_feature_info("Testrunner" ENABLE_TESTS "Run unit tests with 'make ${TEST_TARGET_NAME}'")

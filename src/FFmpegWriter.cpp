@@ -35,7 +35,7 @@
 
 using namespace openshot;
 
-#if IS_FFMPEG_3_2
+#if HAVE_HW_ACCEL
 #pragma message "You are compiling with experimental hardware encode"
 #else
 #pragma message "You are compiling only with software encode"
@@ -44,7 +44,7 @@ using namespace openshot;
 // Multiplexer parameters temporary storage
 AVDictionary *mux_dict = NULL;
 
-#if IS_FFMPEG_3_2
+#if HAVE_HW_ACCEL
 int hw_en_on = 1;					// Is set in UI
 int hw_en_supported = 0;	// Is set by FFmpegWriter
 AVPixelFormat hw_en_av_pix_fmt = AV_PIX_FMT_NONE;
@@ -81,10 +81,10 @@ static int set_hwframe_ctx(AVCodecContext *ctx, AVBufferRef *hw_device_ctx, int6
 	av_buffer_unref(&hw_frames_ref);
 	return err;
 }
-#endif
+#endif // HAVE_HW_ACCEL
 
-FFmpegWriter::FFmpegWriter(string path) :
-		path(path), fmt(NULL), oc(NULL), audio_st(NULL), video_st(NULL), audio_pts(0), video_pts(0), samples(NULL),
+FFmpegWriter::FFmpegWriter(std::string path) :
+		path(path), fmt(NULL), oc(NULL), audio_st(NULL), video_st(NULL), samples(NULL),
 		audio_outbuf(NULL), audio_outbuf_size(0), audio_input_frame_size(0), audio_input_position(0),
 		initial_audio_input_frame_size(0), img_convert_ctx(NULL), cache_size(8), num_of_rescalers(32),
 		rescaler_position(0), video_codec(NULL), audio_codec(NULL), is_writing(false), write_video_count(0), write_audio_count(0),
@@ -166,75 +166,66 @@ void FFmpegWriter::initialize_streams() {
 }
 
 // Set video export options
-void FFmpegWriter::SetVideoOptions(bool has_video, string codec, Fraction fps, int width, int height, Fraction pixel_ratio, bool interlaced, bool top_field_first, int bit_rate) {
+void FFmpegWriter::SetVideoOptions(bool has_video, std::string codec, Fraction fps, int width, int height, Fraction pixel_ratio, bool interlaced, bool top_field_first, int bit_rate) {
 	// Set the video options
 	if (codec.length() > 0) {
 		AVCodec *new_codec;
 		// Check if the codec selected is a hardware accelerated codec
-#if IS_FFMPEG_3_2
-		#if defined(__linux__)
-		if ( (strcmp(codec.c_str(),"h264_vaapi") == 0)) {
+#if HAVE_HW_ACCEL
+#if defined(__linux__)
+		if (strstr(codec.c_str(), "_vaapi") != NULL) {
 			new_codec = avcodec_find_encoder_by_name(codec.c_str());
 			hw_en_on = 1;
 			hw_en_supported = 1;
 			hw_en_av_pix_fmt = AV_PIX_FMT_VAAPI;
 			hw_en_av_device_type = AV_HWDEVICE_TYPE_VAAPI;
-		}
-		else {
-			if ( (strcmp(codec.c_str(),"h264_nvenc") == 0)) {
-				new_codec = avcodec_find_encoder_by_name(codec.c_str());
-				hw_en_on = 1;
-				hw_en_supported = 1;
-				hw_en_av_pix_fmt = AV_PIX_FMT_CUDA;
-				hw_en_av_device_type = AV_HWDEVICE_TYPE_CUDA;
-			}
-			else {
-				new_codec = avcodec_find_encoder_by_name(codec.c_str());
-				hw_en_on = 0;
-				hw_en_supported = 0;
-			}
+		} else if (strstr(codec.c_str(), "_nvenc") != NULL) {
+			new_codec = avcodec_find_encoder_by_name(codec.c_str());
+			hw_en_on = 1;
+			hw_en_supported = 1;
+			hw_en_av_pix_fmt = AV_PIX_FMT_CUDA;
+			hw_en_av_device_type = AV_HWDEVICE_TYPE_CUDA;
+		} else {
+			new_codec = avcodec_find_encoder_by_name(codec.c_str());
+			hw_en_on = 0;
+			hw_en_supported = 0;
 		}
 #elif defined(_WIN32)
-		if ( (strcmp(codec.c_str(),"h264_dxva2") == 0)) {
+		if (strstr(codec.c_str(), "_dxva2") != NULL) {
 			new_codec = avcodec_find_encoder_by_name(codec.c_str());
 			hw_en_on = 1;
 			hw_en_supported = 1;
 			hw_en_av_pix_fmt = AV_PIX_FMT_DXVA2_VLD;
 			hw_en_av_device_type = AV_HWDEVICE_TYPE_DXVA2;
-		}
-		else {
-			if ( (strcmp(codec.c_str(),"h264_nvenc") == 0)) {
-				new_codec = avcodec_find_encoder_by_name(codec.c_str());
-				hw_en_on = 1;
-				hw_en_supported = 1;
-				hw_en_av_pix_fmt = AV_PIX_FMT_CUDA;
-				hw_en_av_device_type = AV_HWDEVICE_TYPE_CUDA;
-			}
-			else {
-				new_codec = avcodec_find_encoder_by_name(codec.c_str());
-				hw_en_on = 0;
-				hw_en_supported = 0;
-			}
+		} else if (strstr(codec.c_str(), "_nvenc") != NULL) {
+			new_codec = avcodec_find_encoder_by_name(codec.c_str());
+			hw_en_on = 1;
+			hw_en_supported = 1;
+			hw_en_av_pix_fmt = AV_PIX_FMT_CUDA;
+			hw_en_av_device_type = AV_HWDEVICE_TYPE_CUDA;
+		} else {
+			new_codec = avcodec_find_encoder_by_name(codec.c_str());
+			hw_en_on = 0;
+			hw_en_supported = 0;
 		}
 #elif defined(__APPLE__)
-		if ( (strcmp(codec.c_str(),"h264_videotoolbox") == 0)) {
+		if (strstr(codec.c_str(), "_videotoolbox") != NULL) {
 			new_codec = avcodec_find_encoder_by_name(codec.c_str());
 			hw_en_on = 1;
 			hw_en_supported = 1;
 			hw_en_av_pix_fmt = AV_PIX_FMT_VIDEOTOOLBOX;
 			hw_en_av_device_type = AV_HWDEVICE_TYPE_VIDEOTOOLBOX;
-		}
-		else {
+		} else {
 			new_codec = avcodec_find_encoder_by_name(codec.c_str());
 			hw_en_on = 0;
 			hw_en_supported = 0;
 		}
-#else  // is FFmpeg 3 but not linux
+	#else  // is FFmpeg 3 but not linux
 		new_codec = avcodec_find_encoder_by_name(codec.c_str());
-#endif //__linux__
+	#endif //__linux__
 #else // not ffmpeg 3
 		new_codec = avcodec_find_encoder_by_name(codec.c_str());
-#endif //IS_FFMPEG_3_2
+#endif // HAVE_HW_ACCEL
 		if (new_codec == NULL)
 			throw InvalidCodec("A valid video codec could not be found for this file.", path);
 		else {
@@ -286,8 +277,16 @@ void FFmpegWriter::SetVideoOptions(bool has_video, string codec, Fraction fps, i
 	info.has_video = has_video;
 }
 
+// Set video export options (overloaded function)
+void FFmpegWriter::SetVideoOptions(std::string codec, int width, int height,  Fraction fps, int bit_rate) {
+	// Call full signature with some default parameters
+	FFmpegWriter::SetVideoOptions(true, codec, fps, width, height,
+	                              openshot::Fraction(1, 1), false, true, bit_rate);
+}
+
+
 // Set audio export options
-void FFmpegWriter::SetAudioOptions(bool has_audio, string codec, int sample_rate, int channels, ChannelLayout channel_layout, int bit_rate) {
+void FFmpegWriter::SetAudioOptions(bool has_audio, std::string codec, int sample_rate, int channels, ChannelLayout channel_layout, int bit_rate) {
 	// Set audio options
 	if (codec.length() > 0) {
 		AVCodec *new_codec = avcodec_find_encoder_by_name(codec.c_str());
@@ -321,12 +320,21 @@ void FFmpegWriter::SetAudioOptions(bool has_audio, string codec, int sample_rate
 	info.has_audio = has_audio;
 }
 
+
+// Set audio export options (overloaded function)
+void FFmpegWriter::SetAudioOptions(std::string codec, int sample_rate, int bit_rate) {
+	// Call full signature with some default parameters
+	FFmpegWriter::SetAudioOptions(true, codec, sample_rate, 2,
+	                              openshot::LAYOUT_STEREO, bit_rate);
+}
+
+
 // Set custom options (some codecs accept additional params)
-void FFmpegWriter::SetOption(StreamType stream, string name, string value) {
+void FFmpegWriter::SetOption(StreamType stream, std::string name, std::string value) {
 	// Declare codec context
 	AVCodecContext *c = NULL;
 	AVStream *st = NULL;
-	stringstream convert(value);
+	std::stringstream convert(value);
 
 	if (info.has_video && stream == VIDEO_STREAM && video_st) {
 		st = video_st;
@@ -350,7 +358,7 @@ void FFmpegWriter::SetOption(StreamType stream, string name, string value) {
 	// Was option found?
 	if (option || (name == "g" || name == "qmin" || name == "qmax" || name == "max_b_frames" || name == "mb_decision" ||
 				   name == "level" || name == "profile" || name == "slices" || name == "rc_min_rate" || name == "rc_max_rate" ||
-				   name == "crf")) {
+				   name == "rc_buffer_size" || name == "crf" || name == "cqp")) {
 		// Check for specific named options
 		if (name == "g")
 			// Set gop_size
@@ -396,12 +404,62 @@ void FFmpegWriter::SetOption(StreamType stream, string name, string value) {
 			// Buffer size
 			convert >> c->rc_buffer_size;
 
-		else if (name == "crf") {
+		else if (name == "cqp") {
+			// encode quality and special settings like lossless
+			// This might be better in an extra methods as more options
+			// and way to set quality are possible
+		#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(55, 39, 101)
+			#if HAVE_HW_ACCEL
+				if (hw_en_on) {
+					av_opt_set_int(c->priv_data, "qp", std::min(std::stoi(value),63), 0); // 0-63
+				} else
+			#endif // HAVE_HW_ACCEL
+				{
+				switch (c->codec_id) {
+					#if (LIBAVCODEC_VERSION_MAJOR >= 58)
+					case AV_CODEC_ID_AV1 :
+						c->bit_rate = 0;
+						av_opt_set_int(c->priv_data, "qp", std::min(std::stoi(value),63), 0); // 0-63
+						break;
+					#endif
+					case AV_CODEC_ID_VP8 :
+						c->bit_rate = 10000000;
+						av_opt_set_int(c->priv_data, "qp", std::max(std::min(std::stoi(value), 63), 4), 0); // 4-63
+						break;
+					case AV_CODEC_ID_VP9 :
+						c->bit_rate = 0;        // Must be zero!
+						av_opt_set_int(c->priv_data, "qp", std::min(std::stoi(value), 63), 0); // 0-63
+						if (std::stoi(value) == 0) {
+							av_opt_set(c->priv_data, "preset", "veryslow", 0);
+							av_opt_set_int(c->priv_data, "lossless", 1, 0);
+						}
+						break;
+					case AV_CODEC_ID_H264 :
+						av_opt_set_int(c->priv_data, "qp", std::min(std::stoi(value), 51), 0); // 0-51
+						if (std::stoi(value) == 0) {
+							av_opt_set(c->priv_data, "preset", "veryslow", 0);
+						}
+						break;
+					case AV_CODEC_ID_HEVC :
+						av_opt_set_int(c->priv_data, "qp", std::min(std::stoi(value), 51), 0); // 0-51
+						if (std::stoi(value) == 0) {
+							av_opt_set(c->priv_data, "preset", "veryslow", 0);
+							av_opt_set_int(c->priv_data, "lossless", 1, 0);
+						}
+						break;
+					default:
+						// For all other codecs assume a range of 0-63
+						av_opt_set_int(c->priv_data, "qp", std::min(std::stoi(value), 63), 0); // 0-63
+						c->bit_rate = 0;
+				}
+			}
+		#endif
+		} else if (name == "crf") {
 			// encode quality and special settings like lossless
 			// This might be better in an extra methods as more options
 			// and way to set quality are possible
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(55, 39, 101)
-#if IS_FFMPEG_3_2
+#if HAVE_HW_ACCEL
 			if (hw_en_on) {
 				double mbs = 15000000.0;
 				if (info.video_bit_rate > 0) {
@@ -409,41 +467,41 @@ void FFmpegWriter::SetOption(StreamType stream, string name, string value) {
 						mbs = 380000.0;
 					}
 					else {
-						mbs *= pow(0.912,info.video_bit_rate);
+						mbs *= std::pow(0.912,info.video_bit_rate);
 					}
 				}
 				c->bit_rate = (int)(mbs);
 			} else
-#endif
+#endif // HAVE_HW_ACCEL
 			{
 				switch (c->codec_id) {
 #if (LIBAVCODEC_VERSION_MAJOR >= 58)
 					case AV_CODEC_ID_AV1 :
 						c->bit_rate = 0;
-						av_opt_set_int(c->priv_data, "crf", min(stoi(value),63), 0);
+						av_opt_set_int(c->priv_data, "crf", std::min(std::stoi(value),63), 0);
 						break;
 #endif
 					case AV_CODEC_ID_VP8 :
 						c->bit_rate = 10000000;
-						av_opt_set_int(c->priv_data, "crf", max(min(stoi(value), 63), 4), 0); // 4-63
+						av_opt_set_int(c->priv_data, "crf", std::max(std::min(std::stoi(value), 63), 4), 0); // 4-63
 						break;
 					case AV_CODEC_ID_VP9 :
 						c->bit_rate = 0;        // Must be zero!
-						av_opt_set_int(c->priv_data, "crf", min(stoi(value), 63), 0); // 0-63
-						if (stoi(value) == 0) {
+						av_opt_set_int(c->priv_data, "crf", std::min(std::stoi(value), 63), 0); // 0-63
+						if (std::stoi(value) == 0) {
 							av_opt_set(c->priv_data, "preset", "veryslow", 0);
 							av_opt_set_int(c->priv_data, "lossless", 1, 0);
 						}
 						break;
 					case AV_CODEC_ID_H264 :
-						av_opt_set_int(c->priv_data, "crf", min(stoi(value), 51), 0); // 0-51
-						if (stoi(value) == 0) {
+						av_opt_set_int(c->priv_data, "crf", std::min(std::stoi(value), 51), 0); // 0-51
+						if (std::stoi(value) == 0) {
 							av_opt_set(c->priv_data, "preset", "veryslow", 0);
 						}
 						break;
-					case AV_CODEC_ID_H265 :
-						av_opt_set_int(c->priv_data, "crf", min(stoi(value), 51), 0); // 0-51
-						if (stoi(value) == 0) {
+					case AV_CODEC_ID_HEVC :
+						av_opt_set_int(c->priv_data, "crf", std::min(std::stoi(value), 51), 0); // 0-51
+						if (std::stoi(value) == 0) {
 							av_opt_set(c->priv_data, "preset", "veryslow", 0);
 							av_opt_set_int(c->priv_data, "lossless", 1, 0);
 						}
@@ -456,7 +514,7 @@ void FFmpegWriter::SetOption(StreamType stream, string name, string value) {
 							if (info.video_bit_rate > 42) {
 								mbs = 380000.0;
 							} else {
-								mbs *= pow(0.912, info.video_bit_rate);
+								mbs *= std::pow(0.912, info.video_bit_rate);
 							}
 						}
 						c->bit_rate = (int) (mbs);
@@ -468,7 +526,7 @@ void FFmpegWriter::SetOption(StreamType stream, string name, string value) {
 			AV_OPTION_SET(st, c->priv_data, name.c_str(), value.c_str(), c);
 		}
 
-		ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::SetOption (" + (string)name + ")", "stream == VIDEO_STREAM", stream == VIDEO_STREAM);
+		ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::SetOption (" + (std::string)name + ")", "stream == VIDEO_STREAM", stream == VIDEO_STREAM);
 
 	// Muxing dictionary is not part of the codec context.
 	// Just reusing SetOption function to set popular multiplexing presets.
@@ -480,7 +538,7 @@ void FFmpegWriter::SetOption(StreamType stream, string name, string value) {
 			// write selfcontained fragmented file, minimum length of the fragment 8 sec; only for MOV, MP4
 			av_dict_set(&mux_dict, "movflags", "frag_keyframe", 0);
 			av_dict_set(&mux_dict, "min_frag_duration", "8000000", 0);
-			}
+		}
 	} else {
 		throw InvalidOptions("The option is not valid for this codec.", path);
 	}
@@ -488,7 +546,7 @@ void FFmpegWriter::SetOption(StreamType stream, string name, string value) {
 }
 
 /// Determine if codec name is valid
-bool FFmpegWriter::IsValidCodec(string codec_name) {
+bool FFmpegWriter::IsValidCodec(std::string codec_name) {
 	// Initialize FFMpeg, and register all formats and codecs
 	AV_REGISTER_ALL
 
@@ -528,7 +586,7 @@ void FFmpegWriter::WriteHeader() {
 	AV_SET_FILENAME(oc, path.c_str());
 
 	// Add general metadata (if any)
-	for (std::map<string, string>::iterator iter = info.metadata.begin(); iter != info.metadata.end(); ++iter) {
+	for (std::map<std::string, std::string>::iterator iter = info.metadata.begin(); iter != info.metadata.end(); ++iter) {
 		av_dict_set(&oc->metadata, iter->first.c_str(), iter->second.c_str(), 0);
 	}
 
@@ -543,6 +601,7 @@ void FFmpegWriter::WriteHeader() {
 
 	// Write the stream header
 	if (avformat_write_header(oc, &dict) != 0) {
+		ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::WriteHeader (avformat_write_header)");
 		throw InvalidFile("Could not write header to file.", path);
 	};
 
@@ -573,7 +632,7 @@ void FFmpegWriter::WriteFrame(std::shared_ptr<Frame> frame) {
 	ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::WriteFrame", "frame->number", frame->number, "spooled_video_frames.size()", spooled_video_frames.size(), "spooled_audio_frames.size()", spooled_audio_frames.size(), "cache_size", cache_size, "is_writing", is_writing);
 
 	// Write the frames once it reaches the correct cache size
-	if (spooled_video_frames.size() == cache_size || spooled_audio_frames.size() == cache_size) {
+	if ((int)spooled_video_frames.size() == cache_size || (int)spooled_audio_frames.size() == cache_size) {
 		// Is writer currently writing?
 		if (!is_writing)
 			// Write frames to video file
@@ -817,7 +876,7 @@ void FFmpegWriter::flush_encoders() {
 #endif // IS_FFMPEG_3_2
 
 			if (error_code < 0) {
-				ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::flush_encoders ERROR [" + (string) av_err2str(error_code) + "]", "error_code", error_code);
+				ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::flush_encoders ERROR [" + (std::string) av_err2str(error_code) + "]", "error_code", error_code);
 			}
 			if (!got_packet) {
 				stop_encoding = 1;
@@ -839,7 +898,7 @@ void FFmpegWriter::flush_encoders() {
 			// Write packet
 			error_code = av_interleaved_write_frame(oc, &pkt);
 			if (error_code < 0) {
-				ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::flush_encoders ERROR [" + (string)av_err2str(error_code) + "]", "error_code", error_code);
+				ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::flush_encoders ERROR [" + (std::string)av_err2str(error_code) + "]", "error_code", error_code);
 			}
 
 			// Deallocate memory (if needed)
@@ -874,7 +933,7 @@ void FFmpegWriter::flush_encoders() {
 			error_code = avcodec_encode_audio2(audio_codec, &pkt, NULL, &got_packet);
 #endif
 			if (error_code < 0) {
-				ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::flush_encoders ERROR [" + (string)av_err2str(error_code) + "]", "error_code", error_code);
+				ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::flush_encoders ERROR [" + (std::string)av_err2str(error_code) + "]", "error_code", error_code);
 			}
 			if (!got_packet) {
 				stop_encoding = 1;
@@ -900,7 +959,7 @@ void FFmpegWriter::flush_encoders() {
 			// Write packet
 			error_code = av_interleaved_write_frame(oc, &pkt);
 			if (error_code < 0) {
-				ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::flush_encoders ERROR [" + (string)av_err2str(error_code) + "]", "error_code", error_code);
+				ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::flush_encoders ERROR [" + (std::string)av_err2str(error_code) + "]", "error_code", error_code);
 			}
 
 			// deallocate memory for packet
@@ -913,16 +972,14 @@ void FFmpegWriter::flush_encoders() {
 // Close the video codec
 void FFmpegWriter::close_video(AVFormatContext *oc, AVStream *st)
 {
-#if IS_FFMPEG_3_2
-	//  #if defined(__linux__)
-		if (hw_en_on && hw_en_supported) {
-			if (hw_device_ctx) {
-				av_buffer_unref(&hw_device_ctx);
-				hw_device_ctx = NULL;
-			}
+#if HAVE_HW_ACCEL
+	if (hw_en_on && hw_en_supported) {
+		if (hw_device_ctx) {
+			av_buffer_unref(&hw_device_ctx);
+			hw_device_ctx = NULL;
 		}
-	//  #endif
-#endif
+	}
+#endif // HAVE_HW_ACCEL
 }
 
 // Close the audio codec
@@ -1041,7 +1098,7 @@ AVStream *FFmpegWriter::add_audio_stream() {
 
 
 	// Set a valid number of channels (or throw error)
-	int channel_layout = info.channel_layout;
+	const uint64_t channel_layout = info.channel_layout;
 	if (codec->channel_layouts) {
 		int i;
 		for (i = 0; codec->channel_layouts[i] != 0; i++)
@@ -1120,7 +1177,7 @@ AVStream *FFmpegWriter::add_video_stream() {
 			case AV_CODEC_ID_AV1 :
 #endif
 			case AV_CODEC_ID_VP9 :
-			case AV_CODEC_ID_H265 :
+			case AV_CODEC_ID_HEVC :
 #endif
 			case AV_CODEC_ID_VP8 :
 			case AV_CODEC_ID_H264 :
@@ -1158,7 +1215,8 @@ AVStream *FFmpegWriter::add_video_stream() {
 	 identically 1. */
 	c->time_base.num = info.video_timebase.num;
 	c->time_base.den = info.video_timebase.den;
-#if LIBAVFORMAT_VERSION_MAJOR >= 56
+// AVCodecContext->framerate was added in FFmpeg 2.2
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(56, 26, 0)
 	c->framerate = av_inv_q(c->time_base);
 #endif
 	st->avg_frame_rate = av_inv_q(c->time_base);
@@ -1212,9 +1270,9 @@ AVStream *FFmpegWriter::add_video_stream() {
 
 	AV_COPY_PARAMS_FROM_CONTEXT(st, c);
 #if (LIBAVFORMAT_VERSION_MAJOR < 58)
-	ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::add_video_stream (" + (string)fmt->name + " : " + (string)av_get_pix_fmt_name(c->pix_fmt) + ")", "c->codec_id", c->codec_id, "c->bit_rate", c->bit_rate, "c->pix_fmt", c->pix_fmt, "oc->oformat->flags", oc->oformat->flags, "AVFMT_RAWPICTURE", AVFMT_RAWPICTURE);
+	ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::add_video_stream (" + (std::string)fmt->name + " : " + (std::string)av_get_pix_fmt_name(c->pix_fmt) + ")", "c->codec_id", c->codec_id, "c->bit_rate", c->bit_rate, "c->pix_fmt", c->pix_fmt, "oc->oformat->flags", oc->oformat->flags, "AVFMT_RAWPICTURE", AVFMT_RAWPICTURE);
 #else
-	ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::add_video_stream (" + (string)fmt->name + " : " + (string)av_get_pix_fmt_name(c->pix_fmt) + ")", "c->codec_id", c->codec_id, "c->bit_rate", c->bit_rate, "c->pix_fmt", c->pix_fmt, "oc->oformat->flags", oc->oformat->flags);
+	ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::add_video_stream (" + (std::string)fmt->name + " : " + (std::string)av_get_pix_fmt_name(c->pix_fmt) + ")", "c->codec_id", c->codec_id, "c->bit_rate", c->bit_rate, "c->pix_fmt", c->pix_fmt, "oc->oformat->flags", oc->oformat->flags);
 #endif
 
 	return st;
@@ -1226,7 +1284,7 @@ void FFmpegWriter::open_audio(AVFormatContext *oc, AVStream *st) {
 	AV_GET_CODEC_FROM_STREAM(st, audio_codec)
 
 	// Set number of threads equal to number of processors (not to exceed 16)
-	audio_codec->thread_count = min(FF_NUM_PROCESSORS, 16);
+	audio_codec->thread_count = std::min(FF_NUM_PROCESSORS, 16);
 
 	// Find the audio encoder
 	codec = avcodec_find_encoder_by_name(info.acodec.c_str());
@@ -1241,7 +1299,7 @@ void FFmpegWriter::open_audio(AVFormatContext *oc, AVStream *st) {
 
 	// Open the codec
 	if (avcodec_open2(audio_codec, codec, &opts) < 0)
-		throw InvalidCodec("Could not open codec", path);
+		throw InvalidCodec("Could not open audio codec", path);
 	AV_COPY_PARAMS_FROM_CONTEXT(st, audio_codec);
 
 	// Free options
@@ -1284,7 +1342,7 @@ void FFmpegWriter::open_audio(AVFormatContext *oc, AVStream *st) {
 	audio_encoder_buffer = new uint8_t[audio_encoder_buffer_size];
 
 	// Add audio metadata (if any)
-	for (std::map<string, string>::iterator iter = info.metadata.begin(); iter != info.metadata.end(); ++iter) {
+	for (std::map<std::string, std::string>::iterator iter = info.metadata.begin(); iter != info.metadata.end(); ++iter) {
 		av_dict_set(&st->metadata, iter->first.c_str(), iter->second.c_str(), 0);
 	}
 
@@ -1297,9 +1355,9 @@ void FFmpegWriter::open_video(AVFormatContext *oc, AVStream *st) {
 	AV_GET_CODEC_FROM_STREAM(st, video_codec)
 
 	// Set number of threads equal to number of processors (not to exceed 16)
-	video_codec->thread_count = min(FF_NUM_PROCESSORS, 16);
+	video_codec->thread_count = std::min(FF_NUM_PROCESSORS, 16);
 
-#if IS_FFMPEG_3_2
+#if HAVE_HW_ACCEL
 	if (hw_en_on && hw_en_supported) {
 		//char *dev_hw = NULL;
 		char adapter[256];
@@ -1330,7 +1388,7 @@ void FFmpegWriter::open_video(AVFormatContext *oc, AVStream *st) {
 #elif defined(__APPLE__)
 		if( adapter_ptr != NULL ) {
 #endif
-				ZmqLogger::Instance()->AppendDebugMethod("Encode Device present using device");
+				ZmqLogger::Instance()->AppendDebugMethod("Encode Device present using device", "adapter", adapter_num);
 		}
 		else {
 				adapter_ptr = NULL;  // use default
@@ -1342,7 +1400,7 @@ void FFmpegWriter::open_video(AVFormatContext *oc, AVStream *st) {
 				throw InvalidCodec("Could not create hwdevice", path);
 		}
 	}
-#endif
+#endif // HAVE_HW_ACCEL
 
 	/* find the video encoder */
 	codec = avcodec_find_encoder_by_name(info.vcodec.c_str());
@@ -1359,32 +1417,67 @@ void FFmpegWriter::open_video(AVFormatContext *oc, AVStream *st) {
 	AVDictionary *opts = NULL;
 	av_dict_set(&opts, "strict", "experimental", 0);
 
-#if IS_FFMPEG_3_2
+#if HAVE_HW_ACCEL
 	if (hw_en_on && hw_en_supported) {
-		video_codec->max_b_frames = 0;        // At least this GPU doesn't support b-frames
 		video_codec->pix_fmt   = hw_en_av_pix_fmt;
-		video_codec->profile = FF_PROFILE_H264_BASELINE | FF_PROFILE_H264_CONSTRAINED;
-		av_opt_set(video_codec->priv_data,"preset","slow",0);
-		av_opt_set(video_codec->priv_data,"tune","zerolatency",0);
-		av_opt_set(video_codec->priv_data, "vprofile", "baseline", AV_OPT_SEARCH_CHILDREN);
+
+		// for the list of possible options, see the list of codec-specific options:
+		// e.g. ffmpeg -h encoder=h264_vaapi or ffmpeg -h encoder=hevc_vaapi
+		// and "man ffmpeg-codecs"
+
+		// For VAAPI, it is safer to explicitly set rc_mode instead of relying on auto-selection
+		// which is ffmpeg version-specific.
+		if (hw_en_av_pix_fmt == AV_PIX_FMT_VAAPI) {
+			int64_t qp;
+			if (av_opt_get_int(video_codec->priv_data, "qp", 0, &qp) != 0 || qp == 0) {
+				// unless "qp" was set for CQP, switch to VBR RC mode
+				av_opt_set(video_codec->priv_data, "rc_mode", "VBR", 0);
+
+				// In the current state (ffmpeg-4.2-4 libva-mesa-driver-19.1.5-1) to use VBR,
+				// one has to specify both bit_rate and maxrate, otherwise a small low quality file is generated on Intel iGPU).
+				video_codec->rc_max_rate = video_codec->bit_rate;
+			}
+		}
+
+		switch (video_codec->codec_id) {
+			case AV_CODEC_ID_H264:
+				video_codec->max_b_frames = 0;        // At least this GPU doesn't support b-frames
+				video_codec->profile = FF_PROFILE_H264_BASELINE | FF_PROFILE_H264_CONSTRAINED;
+				av_opt_set(video_codec->priv_data, "preset", "slow", 0);
+				av_opt_set(video_codec->priv_data, "tune", "zerolatency", 0);
+				av_opt_set(video_codec->priv_data, "vprofile", "baseline", AV_OPT_SEARCH_CHILDREN);
+				break;
+			case AV_CODEC_ID_HEVC:
+				// tested to work with defaults
+				break;
+			case AV_CODEC_ID_VP9:
+				// tested to work with defaults
+				break;
+			default:
+				ZmqLogger::Instance()->AppendDebugMethod("No codec-specific options defined for this codec. HW encoding may fail",
+					"codec_id", video_codec->codec_id);
+				break;
+		}
+
 		// set hw_frames_ctx for encoder's AVCodecContext
 		int err;
 		if ((err = set_hwframe_ctx(video_codec, hw_device_ctx, info.width, info.height)) < 0) {
-				fprintf(stderr, "Failed to set hwframe context.\n");
+				ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::open_video (set_hwframe_ctx) ERROR faled to set hwframe context",
+					"width", info.width, "height", info.height, av_err2str(err), -1);
 		}
 	}
-#endif
+#endif // HAVE_HW_ACCEL
 
 	/* open the codec */
 	if (avcodec_open2(video_codec, codec, &opts) < 0)
-		throw InvalidCodec("Could not open codec", path);
+		throw InvalidCodec("Could not open video codec", path);
 	AV_COPY_PARAMS_FROM_CONTEXT(st, video_codec);
 
 	// Free options
 	av_dict_free(&opts);
 
 	// Add video metadata (if any)
-	for (std::map<string, string>::iterator iter = info.metadata.begin(); iter != info.metadata.end(); ++iter) {
+	for (std::map<std::string, std::string>::iterator iter = info.metadata.begin(); iter != info.metadata.end(); ++iter) {
 		av_dict_set(&st->metadata, iter->first.c_str(), iter->second.c_str(), 0);
 	}
 
@@ -1405,7 +1498,8 @@ void FFmpegWriter::write_audio_packets(bool is_final) {
 		ChannelLayout channel_layout_in_frame = LAYOUT_MONO; // default channel layout
 
 		// Create a new array (to hold all S16 audio samples, for the current queued frames
-		int16_t *all_queued_samples = (int16_t *) av_malloc((sizeof(int16_t) * (queued_audio_frames.size() * AVCODEC_MAX_AUDIO_FRAME_SIZE)));
+		unsigned int all_queued_samples_size = sizeof(int16_t) * (queued_audio_frames.size() * AVCODEC_MAX_AUDIO_FRAME_SIZE);
+		int16_t *all_queued_samples = (int16_t *) av_malloc(all_queued_samples_size);
 		int16_t *all_resampled_samples = NULL;
 		int16_t *final_samples_planar = NULL;
 		int16_t *final_samples = NULL;
@@ -1431,11 +1525,23 @@ void FFmpegWriter::write_audio_packets(bool is_final) {
 			// Calculate total samples
 			total_frame_samples = samples_in_frame * channels_in_frame;
 
-			// Translate audio sample values back to 16 bit integers
-			for (int s = 0; s < total_frame_samples; s++, frame_position++)
-				// Translate sample value and copy into buffer
-				all_queued_samples[frame_position] = int(frame_samples_float[s] * (1 << 15));
+			// Translate audio sample values back to 16 bit integers with saturation
+			float valF;
+			int16_t conv;
+			const int16_t max16 = 32767;
+			const int16_t min16 = -32768;
+			for (int s = 0; s < total_frame_samples; s++, frame_position++) {
+				valF = frame_samples_float[s] * (1 << 15);
+				if (valF > max16)
+					conv = max16;
+				else if (valF < min16)
+					conv = min16;
+				else
+					conv = int(valF + 32768.5) - 32768; // +0.5 is for rounding
 
+				// Copy into buffer
+				all_queued_samples[frame_position] = conv;
+			}
 
 			// Deallocate float array
 			delete[] frame_samples_float;
@@ -1465,8 +1571,10 @@ void FFmpegWriter::write_audio_packets(bool is_final) {
 			audio_frame->nb_samples = total_frame_samples / channels_in_frame;
 
 			// Fill input frame with sample data
-			avcodec_fill_audio_frame(audio_frame, channels_in_frame, AV_SAMPLE_FMT_S16, (uint8_t *) all_queued_samples,
-									 audio_encoder_buffer_size, 0);
+			int error_code = avcodec_fill_audio_frame(audio_frame, channels_in_frame, AV_SAMPLE_FMT_S16, (uint8_t *) all_queued_samples, all_queued_samples_size, 0);
+			if (error_code < 0) {
+				ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::write_audio_packets ERROR [" + (std::string) av_err2str(error_code) + "]", "error_code", error_code);
+			}
 
 			// Do not convert audio to planar format (yet). We need to keep everything interleaved at this point.
 			switch (audio_codec->sample_fmt) {
@@ -1486,14 +1594,15 @@ void FFmpegWriter::write_audio_packets(bool is_final) {
 					output_sample_fmt = AV_SAMPLE_FMT_U8;
 					break;
 				}
+				default: {
+					// This is only here to silence unused-enum warnings
+					break;
+				}
 			}
 
 			// Update total samples & input frame size (due to bigger or smaller data types)
 			total_frame_samples *= (float(info.sample_rate) / sample_rate_in_frame); // adjust for different byte sizes
 			total_frame_samples *= (float(info.channels) / channels_in_frame); // adjust for different # of channels
-
-			// Set remaining samples
-			remaining_frame_samples = total_frame_samples;
 
 			// Create output frame (and allocate arrays)
 			AVFrame *audio_converted = AV_ALLOCATE_FRAME();
@@ -1526,6 +1635,9 @@ void FFmpegWriter::write_audio_packets(bool is_final) {
 									 audio_frame->data,               // input data pointers
 									 audio_frame->linesize[0],        // input plane size, in bytes (0 if unknown)
 									 audio_frame->nb_samples);        // number of input samples to convert
+
+			// Set remaining samples
+			remaining_frame_samples = nb_samples * av_get_bytes_per_sample(AV_SAMPLE_FMT_S16);
 
 			// Create a new array (to hold all resampled S16 audio samples)
 			all_resampled_samples = (int16_t *) av_malloc(
@@ -1719,12 +1831,12 @@ void FFmpegWriter::write_audio_packets(bool is_final) {
 				/* write the compressed frame in the media file */
 				int error_code = av_interleaved_write_frame(oc, &pkt);
 				if (error_code < 0) {
-					ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::write_audio_packets ERROR [" + (string) av_err2str(error_code) + "]", "error_code", error_code);
+					ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::write_audio_packets ERROR [" + (std::string) av_err2str(error_code) + "]", "error_code", error_code);
 				}
 			}
 
 			if (error_code < 0) {
-				ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::write_audio_packets ERROR [" + (string) av_err2str(error_code) + "]", "error_code", error_code);
+				ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::write_audio_packets ERROR [" + (std::string) av_err2str(error_code) + "]", "error_code", error_code);
 			}
 
 			// deallocate AVFrame
@@ -1815,14 +1927,17 @@ void FFmpegWriter::process_video_packet(std::shared_ptr<Frame> frame) {
 		frame_source = allocate_avframe(PIX_FMT_RGBA, source_image_width, source_image_height, &bytes_source, (uint8_t *) pixels);
 #if IS_FFMPEG_3_2
 		AVFrame *frame_final;
+	#if HAVE_HW_ACCEL
 		if (hw_en_on && hw_en_supported) {
 			frame_final = allocate_avframe(AV_PIX_FMT_NV12, info.width, info.height, &bytes_final, NULL);
-		} else {
+		} else
+	#endif // HAVE_HW_ACCEL
+		{
 			frame_final = allocate_avframe((AVPixelFormat)(video_st->codecpar->format), info.width, info.height, &bytes_final, NULL);
 		}
 #else
 		AVFrame *frame_final = allocate_avframe(video_codec->pix_fmt, info.width, info.height, &bytes_final, NULL);
-#endif
+#endif // IS_FFMPEG_3_2
 
 		// Fill with data
 		AV_COPY_PICTURE_DATA(frame_source, (uint8_t *) pixels, PIX_FMT_RGBA, source_image_width, source_image_height);
@@ -1867,7 +1982,7 @@ bool FFmpegWriter::write_video_packet(std::shared_ptr<Frame> frame, AVFrame *fra
 		/* write the compressed frame in the media file */
 		int error_code = av_interleaved_write_frame(oc, &pkt);
 		if (error_code < 0) {
-			ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::write_video_packet ERROR [" + (string) av_err2str(error_code) + "]", "error_code", error_code);
+			ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::write_video_packet ERROR [" + (std::string) av_err2str(error_code) + "]", "error_code", error_code);
 			return false;
 		}
 
@@ -1892,7 +2007,7 @@ bool FFmpegWriter::write_video_packet(std::shared_ptr<Frame> frame, AVFrame *fra
 
 		// Assign the initial AVFrame PTS from the frame counter
 		frame_final->pts = write_video_count;
-#if IS_FFMPEG_3_2
+#if HAVE_HW_ACCEL
 		if (hw_en_on && hw_en_supported) {
 			if (!(hw_frame = av_frame_alloc())) {
 				fprintf(stderr, "Error code: av_hwframe_alloc\n");
@@ -1909,28 +2024,30 @@ bool FFmpegWriter::write_video_packet(std::shared_ptr<Frame> frame, AVFrame *fra
 			}
 			av_frame_copy_props(hw_frame, frame_final);
 		}
-#endif
+#endif // HAVE_HW_ACCEL
 		/* encode the image */
 		int got_packet_ptr = 0;
 		int error_code = 0;
 #if IS_FFMPEG_3_2
 		// Write video packet (latest version of FFmpeg)
-		int frameFinished = 0;
 		int ret;
 
+	#if HAVE_HW_ACCEL
 		if (hw_en_on && hw_en_supported) {
 			ret = avcodec_send_frame(video_codec, hw_frame); //hw_frame!!!
-		} else {
+		} else
+	#endif // HAVE_HW_ACCEL
+		{
 			ret = avcodec_send_frame(video_codec, frame_final);
 		}
 		error_code = ret;
 		if (ret < 0 ) {
 			ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::write_video_packet (Frame not sent)");
 			if (ret == AVERROR(EAGAIN) ) {
-				cerr << "Frame EAGAIN" << "\n";
+				std::cerr << "Frame EAGAIN" << "\n";
 			}
 			if (ret == AVERROR_EOF ) {
-				cerr << "Frame AVERROR_EOF" << "\n";
+				std::cerr << "Frame AVERROR_EOF" << "\n";
 			}
 			avcodec_send_frame(video_codec, NULL);
 		}
@@ -1954,10 +2071,10 @@ bool FFmpegWriter::write_video_packet(std::shared_ptr<Frame> frame, AVFrame *fra
 		// Write video packet (older than FFmpeg 3.2)
 		error_code = avcodec_encode_video2(video_codec, &pkt, frame_final, &got_packet_ptr);
 		if (error_code != 0) {
-			cerr << "Frame AVERROR_EOF" << "\n";
+			std::cerr << "Frame AVERROR_EOF" << "\n";
 		}
 		if (got_packet_ptr == 0) {
-			cerr << "Frame gotpacket error" << "\n";
+			std::cerr << "Frame gotpacket error" << "\n";
 		}
 #else
 		// Write video packet (even older versions of FFmpeg)
@@ -1977,8 +2094,8 @@ bool FFmpegWriter::write_video_packet(std::shared_ptr<Frame> frame, AVFrame *fra
 			// got data back (so encode this frame)
 			got_packet_ptr = 1;
 		}
-#endif
-#endif
+#endif // LIBAVFORMAT_VERSION_MAJOR >= 54
+#endif // IS_FFMPEG_3_2
 
 		/* if zero size, it means the image was buffered */
 		if (error_code == 0 && got_packet_ptr) {
@@ -1999,7 +2116,7 @@ bool FFmpegWriter::write_video_packet(std::shared_ptr<Frame> frame, AVFrame *fra
 			/* write the compressed frame in the media file */
 			int error_code = av_interleaved_write_frame(oc, &pkt);
 			if (error_code < 0) {
-				ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::write_video_packet ERROR [" + (string) av_err2str(error_code) + "]", "error_code", error_code);
+				ZmqLogger::Instance()->AppendDebugMethod("FFmpegWriter::write_video_packet ERROR [" + (std::string) av_err2str(error_code) + "]", "error_code", error_code);
 				return false;
 			}
 		}
@@ -2010,14 +2127,14 @@ bool FFmpegWriter::write_video_packet(std::shared_ptr<Frame> frame, AVFrame *fra
 
 		// Deallocate packet
 		AV_FREE_PACKET(&pkt);
-#if IS_FFMPEG_3_2
+#if HAVE_HW_ACCEL
 		if (hw_en_on && hw_en_supported) {
 			if (hw_frame) {
 				av_frame_free(&hw_frame);
 				hw_frame = NULL;
 			}
 		}
-#endif
+#endif // HAVE_HW_ACCEL
 	}
 
 	// Success
@@ -2034,19 +2151,19 @@ void FFmpegWriter::OutputStreamInfo() {
 void FFmpegWriter::InitScalers(int source_width, int source_height) {
 	int scale_mode = SWS_FAST_BILINEAR;
 	if (openshot::Settings::Instance()->HIGH_QUALITY_SCALING) {
-		scale_mode = SWS_LANCZOS;
+		scale_mode = SWS_BICUBIC;
 	}
 
 	// Init software rescalers vector (many of them, one for each thread)
 	for (int x = 0; x < num_of_rescalers; x++) {
 		// Init the software scaler from FFMpeg
-#if IS_FFMPEG_3_2
+#if HAVE_HW_ACCEL
 		if (hw_en_on && hw_en_supported) {
-			img_convert_ctx = sws_getContext(source_width, source_height, PIX_FMT_RGBA, info.width, info.height, AV_PIX_FMT_NV12, SWS_BILINEAR, NULL, NULL, NULL);
+			img_convert_ctx = sws_getContext(source_width, source_height, PIX_FMT_RGBA, info.width, info.height, AV_PIX_FMT_NV12, scale_mode, NULL, NULL, NULL);
 		} else
-#endif
+#endif // HAVE_HW_ACCEL
 		{
-			img_convert_ctx = sws_getContext(source_width, source_height, PIX_FMT_RGBA, info.width, info.height, AV_GET_CODEC_PIXEL_FORMAT(video_st, video_st->codec), SWS_BILINEAR,
+			img_convert_ctx = sws_getContext(source_width, source_height, PIX_FMT_RGBA, info.width, info.height, AV_GET_CODEC_PIXEL_FORMAT(video_st, video_st->codec), scale_mode,
 											 NULL, NULL, NULL);
 		}
 

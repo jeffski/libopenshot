@@ -24,35 +24,28 @@
 # along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
 ################################################################################
 
-# Pick up our include directories from the parent context
-include_directories(${OPENSHOT_INCLUDE_DIRS})
-
-####### Display summary of options/dependencies ######
+# Collect and display summary of options/dependencies
 include(FeatureSummary)
-#set_property(GLOBAL APPEND PROPERTY FeatureSummary_PKG_TYPES BUILD)
-#find_package(FOO)
-#set_package_properties(FOO PROPERTIES TYPE BUILD)
 
-################ OPTIONS ##################
-# Optional build settings for libopenshot
-OPTION(USE_SYSTEM_JSONCPP "Use system installed JsonCpp" OFF)
+include(GNUInstallDirs)
 
 ################ WINDOWS ##################
 # Set some compiler options for Windows
 # required for libopenshot-audio headers
-IF (WIN32)
+if (WIN32)
 	add_definitions( -DIGNORE_JUCE_HYPOT=1 )
-	SET(CMAKE_CXX_FLAGS " ${CMAKE_CXX_FLAGS} -include cmath")
-ENDIF(WIN32)
-IF (APPLE)
-	# If you still get errors compiling with GCC 4.8, mac headers need to be patched: http://hamelot.co.uk/programming/osx-gcc-dispatch_block_t-has-not-been-declared-invalid-typedef/
-	SET_PROPERTY(GLOBAL PROPERTY JUCE_MAC "JUCE_MAC")
-	ADD_DEFINITIONS(-DNDEBUG)
-	SET(EXTENSION "mm")
+	set(CMAKE_CXX_FLAGS " ${CMAKE_CXX_FLAGS} -include cmath")
+endif()
 
-	SET(JUCE_PLATFORM_SPECIFIC_DIR build/macosx/platform_specific_code)
-	SET(JUCE_PLATFORM_SPECIFIC_LIBRARIES "-framework Carbon -framework Cocoa -framework CoreFoundation -framework CoreAudio -framework CoreMidi -framework IOKit -framework AGL -framework AudioToolbox -framework QuartzCore -lobjc -framework Accelerate")
-ENDIF(APPLE)
+if (APPLE)
+	# If you still get errors compiling with GCC 4.8, mac headers need to be patched: http://hamelot.co.uk/programming/osx-gcc-dispatch_block_t-has-not-been-declared-invalid-typedef/
+	set_property(GLOBAL PROPERTY JUCE_MAC "JUCE_MAC")
+	add_definitions(-DNDEBUG)
+	set(EXTENSION "mm")
+
+	set(JUCE_PLATFORM_SPECIFIC_DIR build/macosx/platform_specific_code)
+	set(JUCE_PLATFORM_SPECIFIC_LIBRARIES "-framework Carbon -framework Cocoa -framework CoreFoundation -framework CoreAudio -framework CoreMidi -framework IOKit -framework AGL -framework AudioToolbox -framework QuartzCore -lobjc -framework Accelerate")
+endif()
 
 ################ IMAGE MAGICK ##################
 # Set the Quantum Depth that ImageMagick was built with (default to 16 bits)
@@ -73,251 +66,332 @@ ELSE (OPENSHOT_IMAGEMAGICK_COMPATIBILITY)
 ENDIF (OPENSHOT_IMAGEMAGICK_COMPATIBILITY)
 
 # Find the ImageMagick++ library
-FIND_PACKAGE(ImageMagick COMPONENTS Magick++ MagickWand MagickCore)
-IF (ImageMagick_FOUND)
+find_package(ImageMagick COMPONENTS Magick++ MagickWand MagickCore)
+if (ImageMagick_FOUND)
 	# Include ImageMagick++ headers (needed for compile)
 	include_directories(${ImageMagick_INCLUDE_DIRS})
 
 	# define a global var (used in the C++)
 	add_definitions( -DUSE_IMAGEMAGICK=1 )
-	SET(CMAKE_SWIG_FLAGS "-DUSE_IMAGEMAGICK=1")
+	set(CMAKE_SWIG_FLAGS "-DUSE_IMAGEMAGICK=1")
 
-ENDIF (ImageMagick_FOUND)
-
-################### FFMPEG #####################
-# Find FFmpeg libraries (used for video encoding / decoding)
-FIND_PACKAGE(FFmpeg REQUIRED)
-
-foreach(ffmpeg_comp AVCODEC AVDEVICE AVFORMAT AVFILTER AVUTIL POSTPROC SWSCALE SWRESAMPLE AVRESAMPLE)
-    if(${ffmpeg_comp}_FOUND)
-        list(APPEND FF_INCLUDES ${${ffmpeg_comp}_INCLUDE_DIRS})
-        add_definitions(${${ffmpeg_comp}_DEFINITIONS})
-        list(APPEND FF_LIBRARIES ${${ffmpeg_comp}_LIBRARIES})
-    endif()
-endforeach()
-list(REMOVE_DUPLICATES FF_INCLUDES)
-include_directories(${FF_INCLUDES})
+endif()
 
 ################# LIBOPENSHOT-AUDIO ###################
 # Find JUCE-based openshot Audio libraries
-FIND_PACKAGE(OpenShotAudio 0.1.8 REQUIRED)
+find_package(OpenShotAudio 0.2.0 REQUIRED)
 
 # Include Juce headers (needed for compile)
 include_directories(${LIBOPENSHOT_AUDIO_INCLUDE_DIRS})
 
-################# QT5 ###################
-# Find QT5 libraries
-foreach(qt_lib Qt5Widgets Qt5Core Qt5Gui Qt5Multimedia Qt5MultimediaWidgets)
-    find_package(${qt_lib} REQUIRED)
-    # Header files
-    include_directories(${${qt_lib}_INCLUDE_DIRS})
-    # Compiler definitions
-    add_definitions(${${qt_lib}_DEFINITIONS})
-    # Other CFLAGS
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${${qt_lib}_EXECUTABLE_COMPILE_FLAGS}")
-    # For use when linking
-    list(APPEND QT_LIBRARIES ${${qt_lib}_LIBRARIES})
-endforeach()
-
-# Manually moc Qt files
-qt5_wrap_cpp(MOC_FILES ${QT_HEADER_FILES})
-
 ################# BLACKMAGIC DECKLINK ###################
 # Find BlackMagic DeckLinkAPI libraries
-IF (ENABLE_BLACKMAGIC)
-	FIND_PACKAGE(BlackMagic)
+if (ENABLE_BLACKMAGIC)
 
-	IF (BLACKMAGIC_FOUND)
-		# Include headers (needed for compile)
+	find_package(BlackMagic)
+
+	if (BLACKMAGIC_FOUND)
+		# Include Blackmagic headers (needed for compile)
 		include_directories(${BLACKMAGIC_INCLUDE_DIR})
 
 		# define a global var (used in the C++)
 		add_definitions( -DUSE_BLACKMAGIC=1 )
-		SET(CMAKE_SWIG_FLAGS "-DUSE_BLACKMAGIC=1")
+		set(CMAKE_SWIG_FLAGS "-DUSE_BLACKMAGIC=1")
+  endif()
 
-	ENDIF (BLACKMAGIC_FOUND)
-ENDIF (ENABLE_BLACKMAGIC)
-
-################### OPENMP #####################
-# Check for OpenMP (used for multi-core processing)
-FIND_PACKAGE(OpenMP)
-
-if (OPENMP_FOUND)
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS} ")
-endif(OPENMP_FOUND)
-
-################### ZEROMQ #####################
-# Find ZeroMQ library (used for socket communication & logging)
-FIND_PACKAGE(ZMQ REQUIRED)
-
-# Include ZeroMQ headers (needed for compile)
-include_directories(${ZMQ_INCLUDE_DIRS})
-
-################### RESVG #####################
-# Find resvg library (used for rendering svg files)
-FIND_PACKAGE(RESVG)
-
-# Include resvg headers (optional SVG library)
-if (RESVG_FOUND)
-   include_directories(${RESVG_INCLUDE_DIRS})
-
-   # define a global var (used in the C++)
-   add_definitions( -DUSE_RESVG=1 )
-   SET(CMAKE_SWIG_FLAGS "-DUSE_RESVG=1")
-endif(RESVG_FOUND)
-
-################### JSONCPP #####################
-# Include jsoncpp headers (needed for JSON parsing)
-if (USE_SYSTEM_JSONCPP)
-	message(STATUS "Discovering system JsonCPP (USE_SYSTEM_JSONCPP enabled)")
-	find_package(JsonCpp REQUIRED)
-	include_directories(${JSONCPP_INCLUDE_DIRS})
-	message(STATUS "Discovering system JsonCPP - done")
-else()
-	message(STATUS "Using embedded JsonCpp (USE_SYSTEM_JSONCPP not enabled)")
-	include_directories("../thirdparty/jsoncpp")
-endif(USE_SYSTEM_JSONCPP)
+endif()
 
 ###############  PROFILING  #################
 #set(PROFILER "/usr/lib/libprofiler.so.0.3.2")
 #set(PROFILER "/usr/lib/libtcmalloc.so.4")
 
-#### GET LIST OF EFFECT FILES ####
-FILE(GLOB EFFECT_FILES "${CMAKE_CURRENT_SOURCE_DIR}/effects/*.cpp")
+if(CMAKE_VERSION VERSION_LESS 3.3)
+  # IWYU wasn't supported internally in 3.2
+  set(ENABLE_IWYU FALSE)
+endif()
 
-#### GET LIST OF QT PLAYER FILES ####
-FILE(GLOB QT_PLAYER_FILES "${CMAKE_CURRENT_SOURCE_DIR}/Qt/*.cpp")
+if(ENABLE_IWYU)
+	find_program(IWYU_PATH NAMES "iwyu"
+		DOC "include-what-you-use source code scanner executable")
+	if(IWYU_PATH)
+		if(IWYU_OPTS)
+			separate_arguments(IWYU_OPTS)
+			list(APPEND _iwyu_opts "-Xiwyu" ${IWYU_OPTS})
+		endif()
+		set(CMAKE_CXX_INCLUDE_WHAT_YOU_USE ${IWYU_PATH} ${_iwyu_opts})
+	else()
+		set(ENABLE_IWYU FALSE)
+	endif()
+endif()
+add_feature_info("IWYU (include-what-you-use)" ENABLE_IWYU "Scan all source files with 'iwyu'")
 
-###############  SET LIBRARY SOURCE FILES  #################
-SET ( OPENSHOT_SOURCE_FILES
-		AudioBufferSource.cpp
-		AudioReaderSource.cpp
-		AudioResampler.cpp
-		CacheBase.cpp
-		CacheDisk.cpp
-		CacheMemory.cpp
-		ChunkReader.cpp
-		ChunkWriter.cpp
-		Color.cpp
-		Clip.cpp
-		ClipBase.cpp
-		Coordinate.cpp
-		CrashHandler.cpp
-		DummyReader.cpp
-		ReaderBase.cpp
-		RendererBase.cpp
-		WriterBase.cpp
-		EffectBase.cpp
-		${EFFECT_FILES}
-		EffectInfo.cpp
-		FFmpegReader.cpp
-		FFmpegWriter.cpp
-		Fraction.cpp
-		Frame.cpp
-		FrameMapper.cpp
-		KeyFrame.cpp
-		OpenShotVersion.cpp
-		ZmqLogger.cpp
-		PlayerBase.cpp
-		Point.cpp
-		Profiles.cpp
-		QtImageReader.cpp
-		QtPlayer.cpp
-		Settings.cpp
-		Timeline.cpp
-		QtTextReader.cpp
-		QtHtmlReader.cpp
+# Main library sources
+set(OPENSHOT_SOURCES
+  AudioBufferSource.cpp
+  AudioReaderSource.cpp
+  AudioResampler.cpp
+  CacheBase.cpp
+  CacheDisk.cpp
+  CacheMemory.cpp
+  ChunkReader.cpp
+  ChunkWriter.cpp
+  Color.cpp
+  Clip.cpp
+  ClipBase.cpp
+  Coordinate.cpp
+  CrashHandler.cpp
+  DummyReader.cpp
+  ReaderBase.cpp
+  RendererBase.cpp
+  WriterBase.cpp
+  EffectBase.cpp
+  EffectInfo.cpp
+  FFmpegReader.cpp
+  FFmpegWriter.cpp
+  Fraction.cpp
+  Frame.cpp
+  FrameMapper.cpp
+	Json.cpp
+  KeyFrame.cpp
+  OpenShotVersion.cpp
+  ZmqLogger.cpp
+  PlayerBase.cpp
+  Point.cpp
+  Profiles.cpp
+  QtHtmlReader.cpp
+  QtImageReader.cpp
+  QtPlayer.cpp
+  QtTextReader.cpp
+  Settings.cpp
+  Timeline.cpp)
 
+# Video effects
+set(EFFECTS_SOURCES
+  effects/Bars.cpp
+  effects/Blur.cpp
+  effects/Brightness.cpp
+  effects/ChromaKey.cpp
+  effects/ColorShift.cpp
+  effects/Crop.cpp
+  effects/Deinterlace.cpp
+  effects/Hue.cpp
+  effects/Mask.cpp
+  effects/Negate.cpp
+  effects/Pixelate.cpp
+  effects/Saturation.cpp
+  effects/Shift.cpp
+  effects/Wave.cpp)
 
-		# Qt Video Player
-		${QT_PLAYER_FILES}
-		${MOC_FILES})
+# Qt video player components
+set(QT_PLAYER_SOURCES
+  Qt/AudioPlaybackThread.cpp
+  Qt/PlayerDemo.cpp
+  Qt/PlayerPrivate.cpp
+  Qt/VideoCacheThread.cpp
+  Qt/VideoPlaybackThread.cpp
+  Qt/VideoRenderer.cpp
+  Qt/VideoRenderWidget.cpp)
 
-IF (NOT USE_SYSTEM_JSONCPP)
-	# Third Party JSON Parser
-	SET ( OPENSHOT_SOURCE_FILES ${OPENSHOT_SOURCE_FILES}
-			../thirdparty/jsoncpp/jsoncpp.cpp )
-ENDIF (NOT USE_SYSTEM_JSONCPP)
-
-# ImageMagic related files
-IF (ImageMagick_FOUND)
-	SET ( OPENSHOT_SOURCE_FILES ${OPENSHOT_SOURCE_FILES}
-			ImageReader.cpp
-			ImageWriter.cpp
-			TextReader.cpp)
-ENDIF (ImageMagick_FOUND)
-
-# BlackMagic related files
-IF (BLACKMAGIC_FOUND)
-	SET ( OPENSHOT_SOURCE_FILES ${OPENSHOT_SOURCE_FILES}
-			DecklinkInput.cpp
-			DecklinkReader.cpp
-			DecklinkOutput.cpp
-			DecklinkWriter.cpp)
-ENDIF (BLACKMAGIC_FOUND)
-
-
-# Get list of headers
-file(GLOB_RECURSE headers ${CMAKE_SOURCE_DIR}/include/*.h)
+# Get list of MOC'able headers
+file(GLOB_RECURSE OPENSHOT_QT_HEADERS ${CMAKE_SOURCE_DIR}/include/Qt/*.h)
 
 # Disable RPATH
-SET(CMAKE_MACOSX_RPATH 0)
+set(CMAKE_MACOSX_RPATH 0)
 
 ############### CREATE LIBRARY #################
 # Create shared openshot library
-add_library(openshot SHARED
-		${OPENSHOT_SOURCE_FILES}
-		${headers} )
+add_library(openshot SHARED)
+
+target_sources(openshot PRIVATE
+  ${OPENSHOT_SOURCES}
+  ${EFFECTS_SOURCES}
+  ${QT_PLAYER_SOURCES}
+  ${OPENSHOT_QT_HEADERS}
+  )
 
 # Set SONAME and other library properties
-set_target_properties(openshot
-		PROPERTIES
-		VERSION ${PROJECT_VERSION}
-		SOVERSION ${PROJECT_SO_VERSION}
-		INSTALL_NAME_DIR "${CMAKE_INSTALL_PREFIX}/lib"
-		)
+set_target_properties(openshot PROPERTIES
+  AUTOMOC ON
+  VERSION ${PROJECT_VERSION}
+  SOVERSION ${PROJECT_SO_VERSION}
+  INSTALL_NAME_DIR "${CMAKE_INSTALL_PREFIX}/lib"
+  )
 
-# Linked executables will need this propagated to them
-target_compile_options(openshot PUBLIC ${Qt5Widgets_EXECUTABLE_COMPILE_FLAGS} ${Qt5Core_EXECUTABLE_COMPILE_FLAGS} ${Qt5Gui_EXECUTABLE_COMPILE_FLAGS}  ${Qt5Multimedia_EXECUTABLE_COMPILE_FLAGS} ${Qt5MultimediaWidgets_EXECUTABLE_COMPILE_FLAGS})
+# Add optional ImageMagic-dependent sources
+if(ImageMagick_FOUND)
+	target_sources(openshot PRIVATE
+    ImageReader.cpp
+    ImageWriter.cpp
+    TextReader.cpp)
+endif()
+
+# BlackMagic related files
+if(BLACKMAGIC_FOUND)
+  target_sources(openshot PRIVATE
+    DecklinkInput.cpp
+    DecklinkReader.cpp
+    DecklinkOutput.cpp
+    DecklinkWriter.cpp)
+endif()
+
+# Location of our includes, both internally and when installed
+target_include_directories(openshot
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_BINARY_DIR}/include
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/libopenshot>)
+
+
+################### JSONCPP #####################
+# Include jsoncpp headers (needed for JSON parsing)
+if (USE_SYSTEM_JSONCPP)
+	message(STATUS "Looking for system jsoncpp")
+  # Either an installed config or our find module will
+  # create the IMPORTED target jsoncpp_lib if successful
+  find_package(jsoncpp)
+endif ()
+
+if (NOT jsoncpp_FOUND AND NOT DISABLE_BUNDLED_JSONCPP)
+  message(STATUS "Using embedded jsoncpp (not found or USE_SYSTEM_JSONCPP disabled)")
+  if (NOT TARGET jsoncpp_lib)
+    add_library(jsoncpp_lib INTERFACE)
+    target_include_directories(jsoncpp_lib INTERFACE
+      "${PROJECT_SOURCE_DIR}/thirdparty/jsoncpp")
+    target_sources(jsoncpp_lib INTERFACE "${PROJECT_SOURCE_DIR}/thirdparty/jsoncpp/jsoncpp.cpp")
+    # Because this satisfies the requirement, an installed JsonCpp is optional
+    set_package_properties(jsoncpp PROPERTIES TYPE OPTIONAL)
+  endif ()
+  add_feature_info("jsoncpp (embedded)" TRUE "jsoncpp will be compiled from the bundled sources")
+endif ()
+
+if (jsoncpp_FOUND)
+  # JsonCpp is actually required, even though we probe for it optionally
+  # (This tells feature_summary() to bail if it's not found, later)
+  set_package_properties(jsoncpp PROPERTIES TYPE REQUIRED)
+endif ()
+
+# If we found any usable JsonCpp, use it. Otherwise, bail.
+if (TARGET jsoncpp_lib)
+  target_link_libraries(openshot PUBLIC jsoncpp_lib)
+endif ()
+
+################# QT5 ###################
+# Find QT5 libraries
+set(_qt_components Widgets Core Gui Multimedia MultimediaWidgets)
+find_package(Qt5 COMPONENTS ${_qt_components} REQUIRED)
+
+foreach(_qt_comp IN LISTS _qt_components)
+  if(TARGET Qt5::${_qt_comp})
+    target_link_libraries(openshot PUBLIC Qt5::${_qt_comp})
+  endif()
+endforeach()
+
+################### FFMPEG #####################
+# Find FFmpeg libraries (used for video encoding / decoding)
+find_package(FFmpeg REQUIRED COMPONENTS avcodec avdevice avformat avutil swscale)
+
+foreach(ff_comp avcodec avdevice avformat avfilter avutil postproc swscale swresample avresample)
+  if(TARGET FFmpeg::${ff_comp})
+		target_link_libraries(openshot PUBLIC FFmpeg::${ff_comp})
+  endif()
+endforeach()
+
+################### Threads ####################
+# Threading library -- uses IMPORTED target Threads::Threads (since CMake 3.1)
+set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
+set(THREADS_PREFER_PTHREAD_FLAG TRUE)
+find_package(Threads REQUIRED)
+target_link_libraries(openshot PUBLIC Threads::Threads)
+
+################### OPENMP #####################
+# Check for OpenMP (used for multi-core processing)
+
+# OpenMP is required by FFmpegReader/Writer
+find_package(OpenMP REQUIRED)
+
+if(NOT TARGET OpenMP::OpenMP_CXX)
+    # Older CMake versions (< 3.9) don't create find targets.
+    add_library(OpenMP_TARGET INTERFACE)
+    add_library(OpenMP::OpenMP_CXX ALIAS OpenMP_TARGET)
+    target_compile_options(OpenMP_TARGET INTERFACE ${OpenMP_CXX_FLAGS})
+    target_link_libraries(OpenMP_TARGET INTERFACE Threads::Threads)
+    target_link_libraries(OpenMP_TARGET INTERFACE ${OpenMP_CXX_FLAGS})
+endif()
+
+target_link_libraries(openshot PUBLIC OpenMP::OpenMP_CXX)
+
+################### ZEROMQ #####################
+# Find ZeroMQ library (used for socket communication & logging)
+find_package(ZeroMQ REQUIRED) # Creates libzmq target
+
+# Some platforms package the header-only cppzmq C++ bindings separately,
+# others (Ubuntu) bundle them in with libzmq itself
+find_package(cppzmq QUIET) # Creates cppzmq target
+
+# Link ZeroMQ library
+if (TARGET libzmq)
+	target_link_libraries(openshot PUBLIC libzmq)
+endif()
+# Include cppzmq headers, if not bundled into libzmq
+if (TARGET cppzmq)
+  target_link_libraries(openshot PUBLIC cppzmq)
+endif()
+
+################### RESVG #####################
+# Migrate some legacy variable names
+if(DEFINED RESVGDIR AND NOT DEFINED RESVG_ROOT)
+  set(RESVG_ROOT ${RESVGDIR})
+endif()
+if(DEFINED ENV{RESVGDIR} AND NOT DEFINED RESVG_ROOT)
+  set(RESVG_ROOT $ENV{RESVGDIR})
+endif()
+
+# Find resvg library (used for rendering svg files)
+FIND_PACKAGE(RESVG)
+
+# Include resvg headers (optional SVG library)
+if (TARGET RESVG::resvg)
+  #include_directories(${RESVG_INCLUDE_DIRS})
+  target_link_libraries(openshot PUBLIC RESVG::resvg)
+
+  target_compile_definitions(openshot PUBLIC "-DUSE_RESVG=1")
+  set(CMAKE_SWIG_FLAGS "-DUSE_RESVG=1")
+endif()
 
 ###############  LINK LIBRARY  #################
-SET ( REQUIRED_LIBRARIES
-		${LIBOPENSHOT_AUDIO_LIBRARIES}
-		${FF_LIBRARIES}
-		${QT_LIBRARIES}
-		${PROFILER}
-		${JSONCPP_LIBRARY}
-		${ZMQ_LIBRARIES}
-		)
+# Link remaining dependency libraries
+target_link_libraries(openshot PUBLIC
+	${LIBOPENSHOT_AUDIO_LIBRARIES}
+  ${PROFILER})
 
-IF (RESVG_FOUND)
-	list(APPEND REQUIRED_LIBRARIES ${RESVG_LIBRARIES})
-ENDIF(RESVG_FOUND)
+if(ImageMagick_FOUND)
+  target_link_libraries(openshot PUBLIC ${ImageMagick_LIBRARIES})
+endif()
 
-IF (OPENMP_FOUND)
-	list(APPEND REQUIRED_LIBRARIES ${OpenMP_CXX_FLAGS})
-ENDIF (OPENMP_FOUND)
+if(BLACKMAGIC_FOUND)
+  target_link_libraries(openshot PUBLIC ${BLACKMAGIC_LIBRARY_DIR})
+endif()
 
-IF (ImageMagick_FOUND)
-  list(APPEND REQUIRED_LIBRARIES ${ImageMagick_LIBRARIES})
-ENDIF (ImageMagick_FOUND)
-
-IF (BLACKMAGIC_FOUND)
-	list(APPEND REQUIRED_LIBRARIES ${BLACKMAGIC_LIBRARY_DIR})
-ENDIF (BLACKMAGIC_FOUND)
-
-IF (WIN32)
+if(WIN32)
 	# Required for exception handling on Windows
-	list(APPEND REQUIRED_LIBRARIES "imagehlp" "dbghelp" )
-ENDIF(WIN32)
-
-# Link all referenced libraries
-target_link_libraries(openshot ${REQUIRED_LIBRARIES})
+	target_link_libraries(openshot PUBLIC "imagehlp" "dbghelp" )
+endif()
 
 
 ############### CLI EXECUTABLES ################
 # Create test executable
 add_executable(openshot-example examples/Example.cpp)
+
+# Define path to test input files
+SET(TEST_MEDIA_PATH "${PROJECT_SOURCE_DIR}/src/examples/")
+if (WIN32)
+        STRING(REPLACE "/" "\\\\" TEST_MEDIA_PATH TEST_MEDIA_PATH)
+endif()
+target_compile_definitions(openshot-example PRIVATE
+	-DTEST_MEDIA_PATH="${TEST_MEDIA_PATH}" )
 
 # Link test executable to the new library
 target_link_libraries(openshot-example openshot)
@@ -333,49 +407,40 @@ add_executable(openshot-player Qt/demo/main.cpp)
 target_link_libraries(openshot-player openshot)
 
 ############### TEST BLACKMAGIC CAPTURE APP ################
-IF (BLACKMAGIC_FOUND)
+if (BLACKMAGIC_FOUND)
 	# Create test executable
 	add_executable(openshot-blackmagic
 			examples/ExampleBlackmagic.cpp)
 
 	# Link test executable to the new library
 	target_link_libraries(openshot-blackmagic openshot)
-ENDIF (BLACKMAGIC_FOUND)
+endif()
 
 ############### INCLUDE SWIG BINDINGS ################
 add_subdirectory(bindings)
 
-########### PRINT FEATURE SUMMARY ##############
-feature_summary(WHAT ALL
-    INCLUDE_QUIET_PACKAGES
-    DESCRIPTION "Build configuration:"
-    VAR featuresText)
-message("\n${featuresText}")
-
 ############### INSTALL HEADERS & LIBRARY ################
-set(LIB_INSTALL_DIR lib${LIB_SUFFIX}) # determine correct lib folder
 
 # Install primary library
-INSTALL(TARGETS openshot
-		ARCHIVE DESTINATION ${LIB_INSTALL_DIR}
-		LIBRARY DESTINATION ${LIB_INSTALL_DIR}
-		RUNTIME DESTINATION ${LIB_INSTALL_DIR}
-		COMPONENT library )
+install(TARGETS openshot
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  RUNTIME DESTINATION ${CMAKE_INSTALL_LIBDIR})
 
-INSTALL(DIRECTORY ${CMAKE_SOURCE_DIR}/include/
-		DESTINATION ${CMAKE_INSTALL_PREFIX}/include/libopenshot
-		FILES_MATCHING PATTERN "*.h")
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/include/
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/libopenshot
+  FILES_MATCHING PATTERN "*.h")
 
 ############### CPACK PACKAGING ##############
-IF(MINGW)
-	SET(CPACK_GENERATOR "NSIS")
-ENDIF(MINGW)
-IF(UNIX AND NOT APPLE)
-	SET(CPACK_GENERATOR "DEB")
-ENDIF(UNIX AND NOT APPLE)
-#IF(UNIX AND APPLE)
-#	SET(CPACK_GENERATOR "DragNDrop")
-#ENDIF(UNIX AND APPLE)
-SET(CPACK_DEBIAN_PACKAGE_MAINTAINER "Jonathan Thomas") #required
+if(MINGW)
+	set(CPACK_GENERATOR "NSIS")
+endif()
+if(UNIX AND NOT APPLE)
+	set(CPACK_GENERATOR "DEB")
+endif()
+#if(UNIX AND APPLE)
+#	set(CPACK_GENERATOR "DragNDrop")
+#endif()
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Jonathan Thomas") #required
 
-INCLUDE(CPack)
+include(CPack)

@@ -180,14 +180,14 @@ std::shared_ptr<Frame> QtHtmlReader::GetFrame(int64_t requested_frame)
 }
 
 // Generate JSON string of this object
-std::string QtHtmlReader::Json() {
+std::string QtHtmlReader::Json() const {
 
 	// Return formatted string
 	return JsonValue().toStyledString();
 }
 
-// Generate Json::JsonValue for this object
-Json::Value QtHtmlReader::JsonValue() {
+// Generate Json::Value for this object
+Json::Value QtHtmlReader::JsonValue() const {
 
 	// Create root json object
 	Json::Value root = ReaderBase::JsonValue(); // get parent properties
@@ -206,36 +206,24 @@ Json::Value QtHtmlReader::JsonValue() {
 }
 
 // Load JSON string into this object
-void QtHtmlReader::SetJson(std::string value) {
+void QtHtmlReader::SetJson(const std::string value) {
 
 	// Parse JSON string into JSON objects
-	Json::Value root;
-	Json::CharReaderBuilder rbuilder;
-	Json::CharReader* reader(rbuilder.newCharReader());
-
-	std::string errors;
-	bool success = reader->parse( value.c_str(),
-                 value.c_str() + value.size(), &root, &errors );
-	delete reader;
-	
-	if (!success)
-		// Raise exception
-		throw InvalidJSON("JSON could not be parsed (or is invalid)", "");
-
 	try
 	{
+		const Json::Value root = openshot::stringToJson(value);
 		// Set all values that match
 		SetJsonValue(root);
 	}
-	catch (exception e)
+	catch (const std::exception& e)
 	{
 		// Error parsing JSON (or missing keys)
-		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)", "");
+		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)");
 	}
 }
 
-// Load Json::JsonValue into this object
-void QtHtmlReader::SetJsonValue(Json::Value root) {
+// Load Json::Value into this object
+void QtHtmlReader::SetJsonValue(const Json::Value root) {
 
 	// Set parent data
 	ReaderBase::SetJsonValue(root);
