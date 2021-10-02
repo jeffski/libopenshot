@@ -3,9 +3,12 @@
  * @brief Source file for EffectBase class
  * @author Jonathan Thomas <jonathan@openshot.org>
  *
- * @section LICENSE
+ * @ref License
+ */
+
+/* LICENSE
  *
- * Copyright (c) 2008-2014 OpenShot Studios, LLC
+ * Copyright (c) 2008-2019 OpenShot Studios, LLC
  * <http://www.openshotstudios.com/>. This file is part of
  * OpenShot Library (libopenshot), an open-source project dedicated to
  * delivering high quality video editing and animation solutions to the
@@ -25,7 +28,8 @@
  * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../include/Color.h"
+#include "Color.h"
+#include "Exceptions.h"
 
 using namespace openshot;
 
@@ -50,7 +54,7 @@ Color::Color(Keyframe Red, Keyframe Green, Keyframe Blue, Keyframe Alpha)
 }
 
 // Constructor which takes a HEX color code
-Color::Color(string color_hex)
+Color::Color(std::string color_hex)
 {
 	// Create a QColor from hex
 	QColor color(QString::fromStdString(color_hex));
@@ -61,7 +65,7 @@ Color::Color(string color_hex)
 }
 
 // Get the HEX value of a color at a specific frame
-string Color::GetColorHex(int64_t frame_number) {
+std::string Color::GetColorHex(int64_t frame_number) {
 
 	int r = red.GetInt(frame_number);
 	int g = green.GetInt(frame_number);
@@ -69,6 +73,17 @@ string Color::GetColorHex(int64_t frame_number) {
 	int a = alpha.GetInt(frame_number);
 
 	return QColor( r,g,b,a ).name().toStdString();
+}
+
+// Get the RGBA values of a color at a specific frame
+std::vector<int> Color::GetColorRGBA(int64_t frame_number) {
+	std::vector<int> rgba;
+	rgba.push_back(red.GetInt(frame_number));
+	rgba.push_back(green.GetInt(frame_number));
+	rgba.push_back(blue.GetInt(frame_number));
+	rgba.push_back(alpha.GetInt(frame_number));
+
+	return rgba;
 }
 
 // Get the distance between 2 RGB pairs (alpha is ignored)
@@ -82,14 +97,14 @@ long Color::GetDistance(long R1, long G1, long B1, long R2, long G2, long B2)
 }
 
 // Generate JSON string of this object
-string Color::Json() {
+std::string Color::Json() const {
 
 	// Return formatted string
 	return JsonValue().toStyledString();
 }
 
-// Generate Json::JsonValue for this object
-Json::Value Color::JsonValue() {
+// Generate Json::Value for this object
+Json::Value Color::JsonValue() const {
 
 	// Create root json object
 	Json::Value root;
@@ -103,30 +118,24 @@ Json::Value Color::JsonValue() {
 }
 
 // Load JSON string into this object
-void Color::SetJson(string value) {
+void Color::SetJson(const std::string value) {
 
 	// Parse JSON string into JSON objects
-	Json::Value root;
-	Json::Reader reader;
-	bool success = reader.parse( value, root );
-	if (!success)
-		// Raise exception
-		throw InvalidJSON("JSON could not be parsed (or is invalid)", "");
-
 	try
 	{
+		const Json::Value root = openshot::stringToJson(value);
 		// Set all values that match
 		SetJsonValue(root);
 	}
-	catch (exception e)
+	catch (const std::exception& e)
 	{
 		// Error parsing JSON (or missing keys)
-		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)", "");
+		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)");
 	}
 }
 
-// Load Json::JsonValue into this object
-void Color::SetJsonValue(Json::Value root) {
+// Load Json::Value into this object
+void Color::SetJsonValue(const Json::Value root) {
 
 	// Set data from Json (if key is found)
 	if (!root["red"].isNull())

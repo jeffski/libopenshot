@@ -3,9 +3,12 @@
  * @brief Source file for AudioReaderSource class
  * @author Jonathan Thomas <jonathan@openshot.org>
  *
- * @section LICENSE
+ * @ref License
+ */
+
+/* LICENSE
  *
- * Copyright (c) 2008-2014 OpenShot Studios, LLC
+ * Copyright (c) 2008-2019 OpenShot Studios, LLC
  * <http://www.openshotstudios.com/>. This file is part of
  * OpenShot Library (libopenshot), an open-source project dedicated to
  * delivering high quality video editing and animation solutions to the
@@ -25,14 +28,15 @@
  * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../include/AudioReaderSource.h"
+#include "AudioReaderSource.h"
+#include "Exceptions.h"
 
 using namespace std;
 using namespace openshot;
 
 // Constructor that reads samples from a reader
 AudioReaderSource::AudioReaderSource(ReaderBase *audio_reader, int64_t starting_frame_number, int buffer_size)
-	: reader(audio_reader), frame_number(starting_frame_number), original_frame_number(starting_frame_number),
+	: reader(audio_reader), frame_number(starting_frame_number),
 	  size(buffer_size), position(0), frame_position(0), estimated_frame(0), speed(1) {
 
 	// Initialize an audio buffer (based on reader)
@@ -48,7 +52,7 @@ AudioReaderSource::~AudioReaderSource()
 	// Clear and delete the buffer
 	delete buffer;
 	buffer = NULL;
-};
+}
 
 // Get more samples from the reader
 void AudioReaderSource::GetMoreSamplesFromReader()
@@ -63,7 +67,7 @@ void AudioReaderSource::GetMoreSamplesFromReader()
 	}
 
 	// Debug
-	ZmqLogger::Instance()->AppendDebugMethod("AudioReaderSource::GetMoreSamplesFromReader", "amount_needed", amount_needed, "amount_remaining", amount_remaining, "", -1, "", -1, "", -1, "", -1);
+	ZmqLogger::Instance()->AppendDebugMethod("AudioReaderSource::GetMoreSamplesFromReader", "amount_needed", amount_needed, "amount_remaining", amount_remaining);
 
 	// Init estimated buffer equal to the current frame position (before getting more samples)
 	estimated_frame = frame_number;
@@ -93,8 +97,6 @@ void AudioReaderSource::GetMoreSamplesFromReader()
 				frame_number = frame_number + speed;
 
 			} catch (const ReaderClosed & e) {
-			break;
-			} catch (const TooManySeeks & e) {
 			break;
 			} catch (const OutOfBoundsFrame & e) {
 			break;
@@ -146,10 +148,10 @@ juce::AudioSampleBuffer* AudioReaderSource::reverse_buffer(juce::AudioSampleBuff
 	int channels = buffer->getNumChannels();
 
 	// Debug
-	ZmqLogger::Instance()->AppendDebugMethod("AudioReaderSource::reverse_buffer", "number_of_samples", number_of_samples, "channels", channels, "", -1, "", -1, "", -1, "", -1);
+	ZmqLogger::Instance()->AppendDebugMethod("AudioReaderSource::reverse_buffer", "number_of_samples", number_of_samples, "channels", channels);
 
 	// Reverse array (create new buffer to hold the reversed version)
-	AudioSampleBuffer *reversed = new juce::AudioSampleBuffer(channels, number_of_samples);
+	juce::AudioSampleBuffer *reversed = new juce::AudioSampleBuffer(channels, number_of_samples);
 	reversed->clear();
 
 	for (int channel = 0; channel < channels; channel++)
@@ -174,7 +176,7 @@ juce::AudioSampleBuffer* AudioReaderSource::reverse_buffer(juce::AudioSampleBuff
 }
 
 // Get the next block of audio samples
-void AudioReaderSource::getNextAudioBlock(const AudioSourceChannelInfo& info)
+void AudioReaderSource::getNextAudioBlock(const juce::AudioSourceChannelInfo& info)
 {
 	int buffer_samples = buffer->getNumSamples();
 	int buffer_channels = buffer->getNumChannels();
@@ -245,7 +247,7 @@ void AudioReaderSource::prepareToPlay(int, double) { }
 void AudioReaderSource::releaseResources() { }
 
 // Set the next read position of this source
-void AudioReaderSource::setNextReadPosition (int64 newPosition)
+void AudioReaderSource::setNextReadPosition (juce::int64 newPosition)
 {
 	// set position (if the new position is in range)
 	if (newPosition >= 0 && newPosition < buffer->getNumSamples())
@@ -253,14 +255,14 @@ void AudioReaderSource::setNextReadPosition (int64 newPosition)
 }
 
 // Get the next read position of this source
-int64 AudioReaderSource::getNextReadPosition() const
+juce::int64 AudioReaderSource::getNextReadPosition() const
 {
 	// return the next read position
 	return position;
 }
 
 // Get the total length (in samples) of this audio source
-int64 AudioReaderSource::getTotalLength() const
+juce::int64 AudioReaderSource::getTotalLength() const
 {
 	// Get the length
 	if (reader)
@@ -284,7 +286,7 @@ void AudioReaderSource::setLooping (bool shouldLoop)
 }
 
 // Update the internal buffer used by this source
-void AudioReaderSource::setBuffer (AudioSampleBuffer *audio_buffer)
+void AudioReaderSource::setBuffer (juce::AudioSampleBuffer *audio_buffer)
 {
 	buffer = audio_buffer;
 	setNextReadPosition(0);

@@ -3,9 +3,12 @@
  * @brief Source file for DummyReader class
  * @author Jonathan Thomas <jonathan@openshot.org>
  *
- * @section LICENSE
+ * @ref License
+ */
+
+/* LICENSE
  *
- * Copyright (c) 2008-2014 OpenShot Studios, LLC
+ * Copyright (c) 2008-2019 OpenShot Studios, LLC
  * <http://www.openshotstudios.com/>. This file is part of
  * OpenShot Library (libopenshot), an open-source project dedicated to
  * delivering high quality video editing and animation solutions to the
@@ -25,20 +28,13 @@
  * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../include/DummyReader.h"
+#include "DummyReader.h"
+#include "Exceptions.h"
 
 using namespace openshot;
 
-// Blank constructor for DummyReader, with default settings.
-DummyReader::DummyReader() {
-
-	// Call actual constructor with default values
-	DummyReader(Fraction(24,1), 1280, 768, 44100, 2, 30.0);
-}
-
-// Constructor for DummyReader.  Pass a framerate and samplerate.
-DummyReader::DummyReader(Fraction fps, int width, int height, int sample_rate, int channels, float duration) {
-
+// Initialize variables used by constructor
+void DummyReader::init(Fraction fps, int width, int height, int sample_rate, int channels, float duration) {
 	// Set key info settings
 	info.has_audio = false;
 	info.has_video = true;
@@ -65,10 +61,33 @@ DummyReader::DummyReader(Fraction fps, int width, int height, int sample_rate, i
 	// Set the ratio based on the reduced fraction
 	info.display_ratio.num = size.num;
 	info.display_ratio.den = size.den;
+}
 
-	// Open and Close the reader, to populate it's attributes (such as height, width, etc...)
-	Open();
-	Close();
+// Blank constructor for DummyReader, with default settings.
+DummyReader::DummyReader() : dummy_cache(NULL), is_open(false) {
+
+	// Initialize important variables
+	init(Fraction(24,1), 1280, 768, 44100, 2, 30.0);
+}
+
+// Constructor for DummyReader.  Pass a framerate and samplerate.
+DummyReader::DummyReader(Fraction fps, int width, int height, int sample_rate, int channels, float duration) : dummy_cache(NULL), is_open(false) {
+
+	// Initialize important variables
+	init(fps, width, height, sample_rate, channels, duration);
+}
+
+// Constructor which also takes a cache object
+DummyReader::DummyReader(Fraction fps, int width, int height, int sample_rate, int channels, float duration, CacheBase* cache) : is_open(false) {
+
+	// Initialize important variables
+	init(fps, width, height, sample_rate, channels, duration);
+
+	// Set cache object
+	dummy_cache = (CacheBase*) cache;
+}
+
+DummyReader::~DummyReader() {
 }
 
 // Open image file
@@ -96,21 +115,40 @@ void DummyReader::Close()
 	}
 }
 
-// Get an openshot::Frame object for a specific frame number of this reader.
+// Get an openshot::Frame object for a specific frame number of this reader. It is either a blank frame
+// or a custom frame added with passing a Cache object to the constructor.
 std::shared_ptr<Frame> DummyReader::GetFrame(int64_t requested_frame)
 {
 	// Check for open reader (or throw exception)
 	if (!is_open)
 		throw ReaderClosed("The ImageReader is closed.  Call Open() before calling this method.", "dummy");
 
-	if (image_frame)
-	{
+	int dummy_cache_count = 0;
+	if (dummy_cache) {
+		dummy_cache_count = dummy_cache->Count();
+	}
+
+	if (dummy_cache_count == 0 && image_frame) {
 		// Create a scoped lock, allowing only a single thread to run the following code at one time
 		const GenericScopedLock<CriticalSection> lock(getFrameCriticalSection);
 
 		// Always return same frame (regardless of which frame number was requested)
 		image_frame->number = requested_frame;
 		return image_frame;
+
+	} else if (dummy_cache_count > 0) {
+		// Create a scoped lock, allowing only a single thread to run the following code at one time
+		const GenericScopedLock<CriticalSection> lock(getFrameCriticalSection);
+
+		// Get a frame from the dummy cache
+		std::shared_ptr<openshot::Frame> f = dummy_cache->GetFrame(requested_frame);
+		if (f) {
+			// return frame from cache (if found)
+			return f;
+		} else {
+			// No cached frame found
+			throw InvalidFile("Requested frame not found. You can only access Frame numbers that exist in the Cache object.", "dummy");
+		}
 	}
 	else
 		// no frame loaded
@@ -118,14 +156,14 @@ std::shared_ptr<Frame> DummyReader::GetFrame(int64_t requested_frame)
 }
 
 // Generate JSON string of this object
-string DummyReader::Json() {
+std::string DummyReader::Json() const {
 
 	// Return formatted string
 	return JsonValue().toStyledString();
 }
 
-// Generate Json::JsonValue for this object
-Json::Value DummyReader::JsonValue() {
+// Generate Json::Value for this object
+Json::Value DummyReader::JsonValue() const {
 
 	// Create root json object
 	Json::Value root = ReaderBase::JsonValue(); // get parent properties
@@ -136,30 +174,24 @@ Json::Value DummyReader::JsonValue() {
 }
 
 // Load JSON string into this object
-void DummyReader::SetJson(string value) {
+void DummyReader::SetJson(const std::string value) {
 
 	// Parse JSON string into JSON objects
-	Json::Value root;
-	Json::Reader reader;
-	bool success = reader.parse( value, root );
-	if (!success)
-		// Raise exception
-		throw InvalidJSON("JSON could not be parsed (or is invalid)", "");
-
 	try
 	{
+		const Json::Value root = openshot::stringToJson(value);
 		// Set all values that match
 		SetJsonValue(root);
 	}
-	catch (exception e)
+	catch (const std::exception& e)
 	{
 		// Error parsing JSON (or missing keys)
-		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)", "");
+		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)");
 	}
 }
 
-// Load Json::JsonValue into this object
-void DummyReader::SetJsonValue(Json::Value root) {
+// Load Json::Value into this object
+void DummyReader::SetJsonValue(const Json::Value root) {
 
 	// Set parent data
 	ReaderBase::SetJsonValue(root);

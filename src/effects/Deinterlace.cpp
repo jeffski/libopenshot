@@ -3,9 +3,12 @@
  * @brief Source file for De-interlace class
  * @author Jonathan Thomas <jonathan@openshot.org>
  *
- * @section LICENSE
+ * @ref License
+ */
+
+/* LICENSE
  *
- * Copyright (c) 2008-2014 OpenShot Studios, LLC
+ * Copyright (c) 2008-2019 OpenShot Studios, LLC
  * <http://www.openshotstudios.com/>. This file is part of
  * OpenShot Library (libopenshot), an open-source project dedicated to
  * delivering high quality video editing and animation solutions to the
@@ -25,7 +28,8 @@
  * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../../include/effects/Deinterlace.h"
+#include "Deinterlace.h"
+#include "Exceptions.h"
 
 using namespace openshot;
 
@@ -59,7 +63,7 @@ void Deinterlace::init_effect_details()
 
 // This method is required for all derived classes of EffectBase, and returns a
 // modified openshot::Frame object
-std::shared_ptr<Frame> Deinterlace::GetFrame(std::shared_ptr<Frame> frame, int64_t frame_number)
+std::shared_ptr<openshot::Frame> Deinterlace::GetFrame(std::shared_ptr<openshot::Frame> frame, int64_t frame_number)
 {
 	// Get original size of frame's image
 	int original_width = frame->GetImage()->width();
@@ -70,7 +74,7 @@ std::shared_ptr<Frame> Deinterlace::GetFrame(std::shared_ptr<Frame> frame, int64
 	const unsigned char* pixels = image->bits();
 
 	// Create a smaller, new image
-	QImage deinterlaced_image(image->width(), image->height() / 2, QImage::Format_RGBA8888);
+	QImage deinterlaced_image(image->width(), image->height() / 2, QImage::Format_RGBA8888_Premultiplied);
 	const unsigned char* deinterlaced_pixels = deinterlaced_image.bits();
 
 	// Loop through the scanlines of the image (even or odd)
@@ -83,7 +87,9 @@ std::shared_ptr<Frame> Deinterlace::GetFrame(std::shared_ptr<Frame> frame, int64
 	}
 
 	// Resize deinterlaced image back to original size, and update frame's image
-	image = std::shared_ptr<QImage>(new QImage(deinterlaced_image.scaled(original_width, original_height, Qt::IgnoreAspectRatio, Qt::FastTransformation)));
+	image = std::make_shared<QImage>(deinterlaced_image.scaled(
+		original_width, original_height,
+		Qt::IgnoreAspectRatio, Qt::FastTransformation));
 
 	// Update image on frame
 	frame->AddImage(image);
@@ -93,14 +99,14 @@ std::shared_ptr<Frame> Deinterlace::GetFrame(std::shared_ptr<Frame> frame, int64
 }
 
 // Generate JSON string of this object
-string Deinterlace::Json() {
+std::string Deinterlace::Json() const {
 
 	// Return formatted string
 	return JsonValue().toStyledString();
 }
 
-// Generate Json::JsonValue for this object
-Json::Value Deinterlace::JsonValue() {
+// Generate Json::Value for this object
+Json::Value Deinterlace::JsonValue() const {
 
 	// Create root json object
 	Json::Value root = EffectBase::JsonValue(); // get parent properties
@@ -112,30 +118,24 @@ Json::Value Deinterlace::JsonValue() {
 }
 
 // Load JSON string into this object
-void Deinterlace::SetJson(string value) {
+void Deinterlace::SetJson(const std::string value) {
 
 	// Parse JSON string into JSON objects
-	Json::Value root;
-	Json::Reader reader;
-	bool success = reader.parse( value, root );
-	if (!success)
-		// Raise exception
-		throw InvalidJSON("JSON could not be parsed (or is invalid)", "");
-
 	try
 	{
+		const Json::Value root = openshot::stringToJson(value);
 		// Set all values that match
 		SetJsonValue(root);
 	}
-	catch (exception e)
+	catch (const std::exception& e)
 	{
 		// Error parsing JSON (or missing keys)
-		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)", "");
+		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)");
 	}
 }
 
-// Load Json::JsonValue into this object
-void Deinterlace::SetJsonValue(Json::Value root) {
+// Load Json::Value into this object
+void Deinterlace::SetJsonValue(const Json::Value root) {
 
 	// Set parent data
 	EffectBase::SetJsonValue(root);
@@ -146,7 +146,7 @@ void Deinterlace::SetJsonValue(Json::Value root) {
 }
 
 // Get all properties for a specific frame
-string Deinterlace::PropertiesJSON(int64_t requested_frame) {
+std::string Deinterlace::PropertiesJSON(int64_t requested_frame) const {
 
 	// Generate JSON properties list
 	Json::Value root;
@@ -161,6 +161,9 @@ string Deinterlace::PropertiesJSON(int64_t requested_frame) {
 	// Add Is Odd Frame choices (dropdown style)
 	root["isOdd"]["choices"].append(add_property_choice_json("Yes", true, isOdd));
 	root["isOdd"]["choices"].append(add_property_choice_json("No", false, isOdd));
+
+	// Set the parent effect which properties this effect will inherit
+	root["parent_effect_id"] = add_property_json("Parent", 0.0, "string", info.parent_effect_id, NULL, -1, -1, false, requested_frame);
 
 	// Return formatted string
 	return root.toStyledString();

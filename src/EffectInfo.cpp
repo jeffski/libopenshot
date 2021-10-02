@@ -3,9 +3,12 @@
  * @brief Source file for EffectInfo class
  * @author Jonathan Thomas <jonathan@openshot.org>
  *
- * @section LICENSE
+ * @ref License
+ */
+
+/* LICENSE
  *
- * Copyright (c) 2008-2014 OpenShot Studios, LLC
+ * Copyright (c) 2008-2019 OpenShot Studios, LLC
  * <http://www.openshotstudios.com/>. This file is part of
  * OpenShot Library (libopenshot), an open-source project dedicated to
  * delivering high quality video editing and animation solutions to the
@@ -25,21 +28,20 @@
  * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../include/EffectInfo.h"
-
+#include "EffectInfo.h"
 
 using namespace openshot;
 
 
 // Generate JSON string of this object
-string EffectInfo::Json() {
+std::string EffectInfo::Json() {
 
 	// Return formatted string
 	return JsonValue().toStyledString();
 }
 
 // Create a new effect instance
-EffectBase* EffectInfo::CreateEffect(string effect_type) {
+EffectBase* EffectInfo::CreateEffect(std::string effect_type) {
 	// Init the matching effect object
 	if (effect_type == "Bars")
 		return new Bars();
@@ -50,10 +52,13 @@ EffectBase* EffectInfo::CreateEffect(string effect_type) {
 	else if (effect_type == "Brightness")
 		return new Brightness();
 
+	else if (effect_type == "Caption")
+		return new Caption();
+
 	else if (effect_type == "ChromaKey")
 		return new ChromaKey();
 
-	else if (effect_type == "Color Shift")
+	else if (effect_type == "ColorShift")
 		return new ColorShift();
 
 	else if (effect_type == "Crop")
@@ -82,10 +87,49 @@ EffectBase* EffectInfo::CreateEffect(string effect_type) {
 
 	else if (effect_type == "Wave")
 		return new Wave();
+
+	else if(effect_type == "Noise")
+		return new Noise();
+
+	else if(effect_type == "Delay")
+		return new Delay();
+
+	else if(effect_type == "Echo")
+		return new Echo();
+
+	else if(effect_type == "Distortion")
+		return new Distortion();
+
+	else if(effect_type == "ParametricEQ")
+		return new ParametricEQ();
+
+	else if(effect_type == "Compressor")
+		return new Compressor();
+
+	else if(effect_type == "Expander")
+		return new Expander();
+
+	else if(effect_type == "Robotization")
+		return new Robotization();
+
+	else if(effect_type == "Whisperization")
+		return new Whisperization();
+
+	#ifdef USE_OPENCV
+	else if(effect_type == "Stabilizer")
+		return new Stabilizer();
+
+	else if(effect_type == "Tracker")
+		return new Tracker();
+		
+	else if(effect_type == "Object Detector")
+		return new ObjectDetection();
+	#endif
+
 	return NULL;
 }
 
-// Generate Json::JsonValue for this object
+// Generate Json::Value for this object
 Json::Value EffectInfo::JsonValue() {
 
 	// Create root json object
@@ -95,6 +139,7 @@ Json::Value EffectInfo::JsonValue() {
 	root.append(Bars().JsonInfo());
 	root.append(Blur().JsonInfo());
 	root.append(Brightness().JsonInfo());
+	root.append(Caption().JsonInfo());
 	root.append(ChromaKey().JsonInfo());
 	root.append(ColorShift().JsonInfo());
 	root.append(Crop().JsonInfo());
@@ -106,6 +151,22 @@ Json::Value EffectInfo::JsonValue() {
 	root.append(Saturation().JsonInfo());
 	root.append(Shift().JsonInfo());
 	root.append(Wave().JsonInfo());
+	/* Audio */
+	root.append(Noise().JsonInfo());
+	root.append(Delay().JsonInfo());
+	root.append(Echo().JsonInfo());
+	root.append(Distortion().JsonInfo());
+	root.append(ParametricEQ().JsonInfo());
+	root.append(Compressor().JsonInfo());
+	root.append(Expander().JsonInfo());
+	root.append(Robotization().JsonInfo());
+	root.append(Whisperization().JsonInfo());
+
+	#ifdef USE_OPENCV
+	root.append(Stabilizer().JsonInfo());
+	root.append(Tracker().JsonInfo());
+	root.append(ObjectDetection().JsonInfo());
+	#endif
 
 	// return JsonValue
 	return root;

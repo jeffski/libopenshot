@@ -3,9 +3,12 @@
  * @brief Source file for DecklinkReader class
  * @author Jonathan Thomas <jonathan@openshot.org>
  *
- * @section LICENSE
+ * @ref License
+ */
+
+/* LICENSE
  *
- * Copyright (c) 2008-2014 OpenShot Studios, LLC
+ * Copyright (c) 2008-2019 OpenShot Studios, LLC
  * <http://www.openshotstudios.com/>. This file is part of
  * OpenShot Library (libopenshot), an open-source project dedicated to
  * delivering high quality video editing and animation solutions to the
@@ -25,7 +28,8 @@
  * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../include/DecklinkReader.h"
+#include "DecklinkReader.h"
+#include "Exceptions.h"
 
 using namespace openshot;
 
@@ -243,14 +247,14 @@ std::shared_ptr<Frame> DecklinkReader::GetFrame(int64_t requested_frame)
 
 
 // Generate JSON string of this object
-string DecklinkReader::Json() {
+std::string DecklinkReader::Json() const {
 
 	// Return formatted string
 	return JsonValue().toStyledString();
 }
 
-// Generate Json::JsonValue for this object
-Json::Value DecklinkReader::JsonValue() {
+// Generate Json::Value for this object
+Json::Value DecklinkReader::JsonValue() const {
 
 	// Create root json object
 	Json::Value root = ReaderBase::JsonValue(); // get parent properties
@@ -261,30 +265,24 @@ Json::Value DecklinkReader::JsonValue() {
 }
 
 // Load JSON string into this object
-void DecklinkReader::SetJson(string value) {
+void DecklinkReader::SetJson(const std::string value) {
 
 	// Parse JSON string into JSON objects
-	Json::Value root;
-	Json::Reader reader;
-	bool success = reader.parse( value, root );
-	if (!success)
-		// Raise exception
-		throw InvalidJSON("JSON could not be parsed (or is invalid)", "");
-
 	try
 	{
+		const Json::Value root = openshot::stringToJson(value);
 		// Set all values that match
 		SetJsonValue(root);
 	}
-	catch (exception e)
+	catch (const std::exception& e)
 	{
 		// Error parsing JSON (or missing keys)
-		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)", "");
+		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)");
 	}
 }
 
-// Load Json::JsonValue into this object
-void DecklinkReader::SetJsonValue(Json::Value root) {
+// Load Json::Value into this object
+void DecklinkReader::SetJsonValue(const Json::Value root) {
 
 	// Set parent data
 	ReaderBase::SetJsonValue(root);

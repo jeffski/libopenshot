@@ -3,9 +3,12 @@
  * @brief Source file for ChunkWriter class
  * @author Jonathan Thomas <jonathan@openshot.org>
  *
- * @section LICENSE
+ * @ref License
+ */
+
+/* LICENSE
  *
- * Copyright (c) 2008-2014 OpenShot Studios, LLC
+ * Copyright (c) 2008-2019 OpenShot Studios, LLC
  * <http://www.openshotstudios.com/>. This file is part of
  * OpenShot Library (libopenshot), an open-source project dedicated to
  * delivering high quality video editing and animation solutions to the
@@ -25,11 +28,12 @@
  * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../include/ChunkWriter.h"
+#include "ChunkWriter.h"
+#include "Exceptions.h"
 
 using namespace openshot;
 
-ChunkWriter::ChunkWriter(string path, ReaderBase *reader) :
+ChunkWriter::ChunkWriter(std::string path, ReaderBase *reader) :
 		local_reader(reader), path(path), chunk_size(24*3), chunk_count(1), frame_count(1), is_writing(false),
 		default_extension(".webm"), default_vcodec("libvpx"), default_acodec("libvorbis"), last_frame_needed(false), is_open(false)
 {
@@ -51,10 +55,10 @@ ChunkWriter::ChunkWriter(string path, ReaderBase *reader) :
 }
 
 // get a formatted path of a specific chunk
-string ChunkWriter::get_chunk_path(int64_t chunk_number, string folder, string extension)
+std::string ChunkWriter::get_chunk_path(int64_t chunk_number, std::string folder, std::string extension)
 {
 	// Create path of new chunk video
-	stringstream chunk_count_string;
+	std::stringstream chunk_count_string;
 	chunk_count_string << chunk_number;
 	QString padded_count = "%1"; //chunk_count_string.str().c_str();
 	padded_count = padded_count.arg(chunk_count_string.str().c_str(), 6, '0');
@@ -131,7 +135,9 @@ void ChunkWriter::WriteFrame(std::shared_ptr<Frame> frame)
 			writer_thumb->WriteFrame(last_frame);
 		} else {
 			// Write the 1st frame (of the 1st chunk)... since no previous chunk is available
-			std::shared_ptr<Frame> blank_frame(new Frame(1, info.width, info.height, "#000000", info.sample_rate, info.channels));
+			auto blank_frame = std::make_shared<Frame>(
+				1, info.width, info.height, "#000000",
+				info.sample_rate, info.channels);
 			blank_frame->AddColor(info.width, info.height, "#000000");
 			writer_final->WriteFrame(blank_frame);
 			writer_preview->WriteFrame(blank_frame);
@@ -154,10 +160,6 @@ void ChunkWriter::WriteFrame(std::shared_ptr<Frame> frame)
 	// Write the frames once it reaches the correct chunk size
 	if (frame_count % chunk_size == 0 && frame_count >= chunk_size)
 	{
-		cout << "Done with chunk" << endl;
-		cout << "frame_count: " << frame_count << endl;
-		cout << "chunk_size: " << chunk_size << endl;
-
 		// Pad an additional 12 frames
 		for (int z = 0; z<12; z++)
 		{
@@ -226,10 +228,6 @@ void ChunkWriter::Close()
 	// Write the frames once it reaches the correct chunk size
 	if (is_writing)
 	{
-		cout << "Final chunk" << endl;
-		cout << "frame_count: " << frame_count << endl;
-		cout << "chunk_size: " << chunk_size << endl;
-
 		// Pad an additional 12 frames
 		for (int z = 0; z<12; z++)
 		{
@@ -271,17 +269,17 @@ void ChunkWriter::Close()
 void ChunkWriter::write_json_meta_data()
 {
 	// Load path of chunk folder
-	string json_path = QDir::cleanPath(QString(path.c_str()) + QDir::separator() + "info.json").toStdString();
+	std::string json_path = QDir::cleanPath(QString(path.c_str()) + QDir::separator() + "info.json").toStdString();
 
 	// Write JSON file
-	ofstream myfile;
+	std::ofstream myfile;
 	myfile.open (json_path.c_str());
-	myfile << local_reader->Json() << endl;
+	myfile << local_reader->Json() << std::endl;
 	myfile.close();
 }
 
 // check for chunk folder
-void ChunkWriter::create_folder(string path)
+void ChunkWriter::create_folder(std::string path)
 {
 	QDir dir(path.c_str());
 	if (!dir.exists()) {
@@ -300,5 +298,3 @@ void ChunkWriter::Open()
 {
 	is_open = true;
 }
-
-

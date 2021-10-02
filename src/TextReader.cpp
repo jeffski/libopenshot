@@ -3,9 +3,12 @@
  * @brief Source file for TextReader class
  * @author Jonathan Thomas <jonathan@openshot.org>
  *
- * @section LICENSE
+ * @ref License
+ */
+
+/* LICENSE
  *
- * Copyright (c) 2008-2014 OpenShot Studios, LLC
+ * Copyright (c) 2008-2019 OpenShot Studios, LLC
  * <http://www.openshotstudios.com/>. This file is part of
  * OpenShot Library (libopenshot), an open-source project dedicated to
  * delivering high quality video editing and animation solutions to the
@@ -25,22 +28,34 @@
  * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../include/TextReader.h"
+// Require ImageMagick support
+#ifdef USE_IMAGEMAGICK
+
+#include "TextReader.h"
+#include "Exceptions.h"
 
 using namespace openshot;
 
 /// Default constructor (blank text)
 TextReader::TextReader() : width(1024), height(768), x_offset(0), y_offset(0), text(""), font("Arial"), size(10.0), text_color("#ffffff"), background_color("#000000"), is_open(false), gravity(GRAVITY_CENTER) {
 
-	// Open and Close the reader, to populate it's attributes (such as height, width, etc...)
+	// Open and Close the reader, to populate its attributes (such as height, width, etc...)
 	Open();
 	Close();
 }
 
-TextReader::TextReader(int width, int height, int x_offset, int y_offset, GravityType gravity, string text, string font, double size, string text_color, string background_color)
+TextReader::TextReader(int width, int height, int x_offset, int y_offset, GravityType gravity, std::string text, std::string font, double size, std::string text_color, std::string background_color)
 : width(width), height(height), x_offset(x_offset), y_offset(y_offset), text(text), font(font), size(size), text_color(text_color), background_color(background_color), is_open(false), gravity(gravity)
 {
-	// Open and Close the reader, to populate it's attributes (such as height, width, etc...)
+	// Open and Close the reader, to populate its attributes (such as height, width, etc...)
+	Open();
+	Close();
+}
+
+void TextReader::SetTextBackgroundColor(std::string color) {
+	text_background_color = color;
+
+	// Open and Close the reader, to populate it's attributes (such as height, width, etc...) plus the text background color
 	Open();
 	Close();
 }
@@ -52,7 +67,8 @@ void TextReader::Open()
 	if (!is_open)
 	{
 		// create image
-		image = std::shared_ptr<Magick::Image>(new Magick::Image(Magick::Geometry(width,height), Magick::Color(background_color)));
+		image = std::make_shared<Magick::Image>(
+			Magick::Geometry(width,height), Magick::Color(background_color));
 
 		// Give image a transparent background color
 		image->backgroundColor(Magick::Color("none"));
@@ -97,6 +113,10 @@ void TextReader::Open()
 		lines.push_back(Magick::DrawablePointSize(size));
 		lines.push_back(Magick::DrawableText(x_offset, y_offset, text));
 
+		if (!text_background_color.empty()) {
+			lines.push_back(Magick::DrawableTextUnderColor(Magick::Color(text_background_color)));
+		}
+
 		// Draw image
 		image->draw(lines);
 
@@ -109,7 +129,7 @@ void TextReader::Open()
 		info.height = image->size().height();
 		info.pixel_ratio.num = 1;
 		info.pixel_ratio.den = 1;
-		info.duration = 60 * 60 * 24; // 24 hour duration
+		info.duration = 60 * 60 * 1;  // 1 hour duration
 		info.fps.num = 30;
 		info.fps.den = 1;
 		info.video_timebase.num = 1;
@@ -148,10 +168,12 @@ std::shared_ptr<Frame> TextReader::GetFrame(int64_t requested_frame)
 	if (image)
 	{
 		// Create or get frame object
-		std::shared_ptr<Frame> image_frame(new Frame(requested_frame, image->size().width(), image->size().height(), "#000000", 0, 2));
+		auto image_frame = std::make_shared<Frame>(
+			requested_frame, image->size().width(), image->size().height(),
+			"#000000", 0, 2);
 
 		// Add Image data to frame
-		std::shared_ptr<Magick::Image> copy_image(new Magick::Image(*image.get()));
+		auto copy_image = std::make_shared<Magick::Image>(*image.get());
 		copy_image->modifyImage(); // actually copy the image data to this object
 		//TODO: Reimplement this with QImage
 		image_frame->AddMagickImage(copy_image);
@@ -160,7 +182,7 @@ std::shared_ptr<Frame> TextReader::GetFrame(int64_t requested_frame)
 		return image_frame;
 	} else {
 		// return empty frame
-		std::shared_ptr<Frame> image_frame(new Frame(1, 640, 480, "#000000", 0, 2));
+		auto image_frame = std::make_shared<Frame>(1, 640, 480, "#000000", 0, 2);
 
 		// return frame object
 		return image_frame;
@@ -169,14 +191,14 @@ std::shared_ptr<Frame> TextReader::GetFrame(int64_t requested_frame)
 }
 
 // Generate JSON string of this object
-string TextReader::Json() {
+std::string TextReader::Json() const {
 
 	// Return formatted string
 	return JsonValue().toStyledString();
 }
 
-// Generate Json::JsonValue for this object
-Json::Value TextReader::JsonValue() {
+// Generate Json::Value for this object
+Json::Value TextReader::JsonValue() const {
 
 	// Create root json object
 	Json::Value root = ReaderBase::JsonValue(); // get parent properties
@@ -190,6 +212,7 @@ Json::Value TextReader::JsonValue() {
 	root["size"] = size;
 	root["text_color"] = text_color;
 	root["background_color"] = background_color;
+	root["text_background_color"] = text_background_color;
 	root["gravity"] = gravity;
 
 	// return JsonValue
@@ -197,30 +220,22 @@ Json::Value TextReader::JsonValue() {
 }
 
 // Load JSON string into this object
-void TextReader::SetJson(string value) {
-
-	// Parse JSON string into JSON objects
-	Json::Value root;
-	Json::Reader reader;
-	bool success = reader.parse( value, root );
-	if (!success)
-		// Raise exception
-		throw InvalidJSON("JSON could not be parsed (or is invalid)", "");
-
+void TextReader::SetJson(const std::string value) {
 	try
 	{
+		Json::Value root = openshot::stringToJson(value);
 		// Set all values that match
 		SetJsonValue(root);
 	}
-	catch (exception e)
+	catch (const std::exception& e)
 	{
 		// Error parsing JSON (or missing keys)
-		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)", "");
+		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)");
 	}
 }
 
-// Load Json::JsonValue into this object
-void TextReader::SetJsonValue(Json::Value root) {
+// Load Json::Value into this object
+void TextReader::SetJsonValue(const Json::Value root) {
 
 	// Set parent data
 	ReaderBase::SetJsonValue(root);
@@ -244,6 +259,8 @@ void TextReader::SetJsonValue(Json::Value root) {
 		text_color = root["text_color"].asString();
 	if (!root["background_color"].isNull())
 		background_color = root["background_color"].asString();
+	if (!root["text_background_color"].isNull())
+		text_background_color = root["text_background_color"].asString();
 	if (!root["gravity"].isNull())
 		gravity = (GravityType) root["gravity"].asInt();
 
@@ -254,3 +271,5 @@ void TextReader::SetJsonValue(Json::Value root) {
 		Open();
 	}
 }
+
+#endif //USE_IMAGEMAGICK

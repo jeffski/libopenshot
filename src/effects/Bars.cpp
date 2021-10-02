@@ -3,9 +3,12 @@
  * @brief Source file for Bars effect class
  * @author Jonathan Thomas <jonathan@openshot.org>
  *
- * @section LICENSE
+ * @ref License
+ */
+
+/* LICENSE
  *
- * Copyright (c) 2008-2014 OpenShot Studios, LLC
+ * Copyright (c) 2008-2019 OpenShot Studios, LLC
  * <http://www.openshotstudios.com/>. This file is part of
  * OpenShot Library (libopenshot), an open-source project dedicated to
  * delivering high quality video editing and animation solutions to the
@@ -25,7 +28,8 @@
  * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../../include/effects/Bars.h"
+#include "Bars.h"
+#include "Exceptions.h"
 
 using namespace openshot;
 
@@ -59,13 +63,14 @@ void Bars::init_effect_details()
 
 // This method is required for all derived classes of EffectBase, and returns a
 // modified openshot::Frame object
-std::shared_ptr<Frame> Bars::GetFrame(std::shared_ptr<Frame> frame, int64_t frame_number)
+std::shared_ptr<openshot::Frame> Bars::GetFrame(std::shared_ptr<openshot::Frame> frame, int64_t frame_number)
 {
 	// Get the frame's image
 	std::shared_ptr<QImage> frame_image = frame->GetImage();
 
 	// Get bar color (and create small color image)
-	std::shared_ptr<QImage> tempColor = std::shared_ptr<QImage>(new QImage(frame_image->width(), 1, QImage::Format_RGBA8888));
+	auto tempColor = std::make_shared<QImage>(
+		frame_image->width(), 1, QImage::Format_RGBA8888_Premultiplied);
 	tempColor->fill(QColor(QString::fromStdString(color.GetColorHex(frame_number))));
 
 	// Get current keyframe values
@@ -111,14 +116,14 @@ std::shared_ptr<Frame> Bars::GetFrame(std::shared_ptr<Frame> frame, int64_t fram
 }
 
 // Generate JSON string of this object
-string Bars::Json() {
+std::string Bars::Json() const {
 
 	// Return formatted string
 	return JsonValue().toStyledString();
 }
 
-// Generate Json::JsonValue for this object
-Json::Value Bars::JsonValue() {
+// Generate Json::Value for this object
+Json::Value Bars::JsonValue() const {
 
 	// Create root json object
 	Json::Value root = EffectBase::JsonValue(); // get parent properties
@@ -134,30 +139,24 @@ Json::Value Bars::JsonValue() {
 }
 
 // Load JSON string into this object
-void Bars::SetJson(string value) {
+void Bars::SetJson(const std::string value) {
 
 	// Parse JSON string into JSON objects
-	Json::Value root;
-	Json::Reader reader;
-	bool success = reader.parse( value, root );
-	if (!success)
-		// Raise exception
-		throw InvalidJSON("JSON could not be parsed (or is invalid)", "");
-
 	try
 	{
+		const Json::Value root = openshot::stringToJson(value);
 		// Set all values that match
 		SetJsonValue(root);
 	}
-	catch (exception e)
+	catch (const std::exception& e)
 	{
 		// Error parsing JSON (or missing keys)
-		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)", "");
+		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)");
 	}
 }
 
-// Load Json::JsonValue into this object
-void Bars::SetJsonValue(Json::Value root) {
+// Load Json::Value into this object
+void Bars::SetJsonValue(const Json::Value root) {
 
 	// Set parent data
 	EffectBase::SetJsonValue(root);
@@ -176,7 +175,7 @@ void Bars::SetJsonValue(Json::Value root) {
 }
 
 // Get all properties for a specific frame
-string Bars::PropertiesJSON(int64_t requested_frame) {
+std::string Bars::PropertiesJSON(int64_t requested_frame) const {
 
 	// Generate JSON properties list
 	Json::Value root;
@@ -188,7 +187,7 @@ string Bars::PropertiesJSON(int64_t requested_frame) {
 	root["duration"] = add_property_json("Duration", Duration(), "float", "", NULL, 0, 1000 * 60 * 30, true, requested_frame);
 
 	// Keyframes
-	root["color"] = add_property_json("Bar Color", 0.0, "color", "", NULL, 0, 255, false, requested_frame);
+	root["color"] = add_property_json("Bar Color", 0.0, "color", "", &color.red, 0, 255, false, requested_frame);
 	root["color"]["red"] = add_property_json("Red", color.red.GetValue(requested_frame), "float", "", &color.red, 0, 255, false, requested_frame);
 	root["color"]["blue"] = add_property_json("Blue", color.blue.GetValue(requested_frame), "float", "", &color.blue, 0, 255, false, requested_frame);
 	root["color"]["green"] = add_property_json("Green", color.green.GetValue(requested_frame), "float", "", &color.green, 0, 255, false, requested_frame);
@@ -197,7 +196,9 @@ string Bars::PropertiesJSON(int64_t requested_frame) {
 	root["right"] = add_property_json("Right Size", right.GetValue(requested_frame), "float", "", &right, 0.0, 0.5, false, requested_frame);
 	root["bottom"] = add_property_json("Bottom Size", bottom.GetValue(requested_frame), "float", "", &bottom, 0.0, 0.5, false, requested_frame);
 
+	// Set the parent effect which properties this effect will inherit
+	root["parent_effect_id"] = add_property_json("Parent", 0.0, "string", info.parent_effect_id, NULL, -1, -1, false, requested_frame);
+
 	// Return formatted string
 	return root.toStyledString();
 }
-

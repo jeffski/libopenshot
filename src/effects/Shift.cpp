@@ -3,9 +3,12 @@
  * @brief Source file for Shift effect class
  * @author Jonathan Thomas <jonathan@openshot.org>
  *
- * @section LICENSE
+ * @ref License
+ */
+
+/* LICENSE
  *
- * Copyright (c) 2008-2014 OpenShot Studios, LLC
+ * Copyright (c) 2008-2019 OpenShot Studios, LLC
  * <http://www.openshotstudios.com/>. This file is part of
  * OpenShot Library (libopenshot), an open-source project dedicated to
  * delivering high quality video editing and animation solutions to the
@@ -25,7 +28,8 @@
  * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../../include/effects/Shift.h"
+#include "Shift.h"
+#include "Exceptions.h"
 
 using namespace openshot;
 
@@ -58,7 +62,7 @@ void Shift::init_effect_details()
 
 // This method is required for all derived classes of EffectBase, and returns a
 // modified openshot::Frame object
-std::shared_ptr<Frame> Shift::GetFrame(std::shared_ptr<Frame> frame, int64_t frame_number)
+std::shared_ptr<openshot::Frame> Shift::GetFrame(std::shared_ptr<openshot::Frame> frame, int64_t frame_number)
 {
 	// Get the frame's image
 	std::shared_ptr<QImage> frame_image = frame->GetImage();
@@ -66,9 +70,9 @@ std::shared_ptr<Frame> Shift::GetFrame(std::shared_ptr<Frame> frame, int64_t fra
 
 	// Get the current shift amount, and clamp to range (-1 to 1 range)
 	double x_shift = x.GetValue(frame_number);
-	double x_shift_limit = fmod(abs(x_shift), 1.0);
+	double x_shift_limit = fmod(fabs(x_shift), 1.0);
 	double y_shift = y.GetValue(frame_number);
-	double y_shift_limit = fmod(abs(y_shift), 1.0);
+	double y_shift_limit = fmod(fabs(y_shift), 1.0);
 
 	// Declare temp arrays to hold pixels while we move things around
 	unsigned char *temp_row = new unsigned char[frame_image->width() * 4]();
@@ -130,14 +134,14 @@ std::shared_ptr<Frame> Shift::GetFrame(std::shared_ptr<Frame> frame, int64_t fra
 }
 
 // Generate JSON string of this object
-string Shift::Json() {
+std::string Shift::Json() const {
 
 	// Return formatted string
 	return JsonValue().toStyledString();
 }
 
-// Generate Json::JsonValue for this object
-Json::Value Shift::JsonValue() {
+// Generate Json::Value for this object
+Json::Value Shift::JsonValue() const {
 
 	// Create root json object
 	Json::Value root = EffectBase::JsonValue(); // get parent properties
@@ -150,30 +154,24 @@ Json::Value Shift::JsonValue() {
 }
 
 // Load JSON string into this object
-void Shift::SetJson(string value) {
+void Shift::SetJson(const std::string value) {
 
 	// Parse JSON string into JSON objects
-	Json::Value root;
-	Json::Reader reader;
-	bool success = reader.parse( value, root );
-	if (!success)
-		// Raise exception
-		throw InvalidJSON("JSON could not be parsed (or is invalid)", "");
-
 	try
 	{
+		const Json::Value root = openshot::stringToJson(value);
 		// Set all values that match
 		SetJsonValue(root);
 	}
-	catch (exception e)
+	catch (const std::exception& e)
 	{
 		// Error parsing JSON (or missing keys)
-		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)", "");
+		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)");
 	}
 }
 
-// Load Json::JsonValue into this object
-void Shift::SetJsonValue(Json::Value root) {
+// Load Json::Value into this object
+void Shift::SetJsonValue(const Json::Value root) {
 
 	// Set parent data
 	EffectBase::SetJsonValue(root);
@@ -186,7 +184,7 @@ void Shift::SetJsonValue(Json::Value root) {
 }
 
 // Get all properties for a specific frame
-string Shift::PropertiesJSON(int64_t requested_frame) {
+std::string Shift::PropertiesJSON(int64_t requested_frame) const {
 
 	// Generate JSON properties list
 	Json::Value root;
@@ -201,7 +199,9 @@ string Shift::PropertiesJSON(int64_t requested_frame) {
 	root["x"] = add_property_json("X Shift", x.GetValue(requested_frame), "float", "", &x, -1, 1, false, requested_frame);
 	root["y"] = add_property_json("Y Shift", y.GetValue(requested_frame), "float", "", &y, -1, 1, false, requested_frame);
 
+	// Set the parent effect which properties this effect will inherit
+	root["parent_effect_id"] = add_property_json("Parent", 0.0, "string", info.parent_effect_id, NULL, -1, -1, false, requested_frame);
+
 	// Return formatted string
 	return root.toStyledString();
 }
-

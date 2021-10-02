@@ -3,9 +3,12 @@
  * @brief Source file for EffectBase class
  * @author Jonathan Thomas <jonathan@openshot.org>
  *
- * @section LICENSE
+ * @ref License
+ */
+
+/* LICENSE
  *
- * Copyright (c) 2008-2014 OpenShot Studios, LLC
+ * Copyright (c) 2008-2019 OpenShot Studios, LLC
  * <http://www.openshotstudios.com/>. This file is part of
  * OpenShot Library (libopenshot), an open-source project dedicated to
  * delivering high quality video editing and animation solutions to the
@@ -25,11 +28,14 @@
  * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../include/EffectBase.h"
+#include "EffectBase.h"
+
+#include "Exceptions.h"
+#include "Timeline.h"
 
 using namespace openshot;
 
-// Initialize the values of the FileInfo struct
+// Initialize the values of the EffectInfo struct
 void EffectBase::InitEffectInfo()
 {
 	// Init clip settings
@@ -38,24 +44,29 @@ void EffectBase::InitEffectInfo()
 	Start(0.0);
 	End(0.0);
 	Order(0);
+	ParentClip(NULL);
+
+	parentEffect = NULL;
 
 	info.has_video = false;
 	info.has_audio = false;
+	info.has_tracked_object = false;
 	info.name = "";
 	info.description = "";
+	info.parent_effect_id = "";
 }
 
 // Display file information
 void EffectBase::DisplayInfo() {
-	cout << fixed << setprecision(2) << boolalpha;
-	cout << "----------------------------" << endl;
-	cout << "----- Effect Information -----" << endl;
-	cout << "----------------------------" << endl;
-	cout << "--> Name: " << info.name << endl;
-	cout << "--> Description: " << info.description << endl;
-	cout << "--> Has Video: " << info.has_video << endl;
-	cout << "--> Has Audio: " << info.has_audio << endl;
-	cout << "----------------------------" << endl;
+	std::cout << std::fixed << std::setprecision(2) << std::boolalpha;
+	std::cout << "----------------------------" << std::endl;
+	std::cout << "----- Effect Information -----" << std::endl;
+	std::cout << "----------------------------" << std::endl;
+	std::cout << "--> Name: " << info.name << std::endl;
+	std::cout << "--> Description: " << info.description << std::endl;
+	std::cout << "--> Has Video: " << info.has_video << std::endl;
+	std::cout << "--> Has Audio: " << info.has_audio << std::endl;
+	std::cout << "----------------------------" << std::endl;
 }
 
 // Constrain a color value from 0 to 255
@@ -71,23 +82,24 @@ int EffectBase::constrain(int color_value)
 }
 
 // Generate JSON string of this object
-string EffectBase::Json() {
+std::string EffectBase::Json() const {
 
 	// Return formatted string
 	return JsonValue().toStyledString();
 }
 
-// Generate Json::JsonValue for this object
-Json::Value EffectBase::JsonValue() {
+// Generate Json::Value for this object
+Json::Value EffectBase::JsonValue() const {
 
 	// Create root json object
 	Json::Value root = ClipBase::JsonValue(); // get parent properties
 	root["name"] = info.name;
 	root["class_name"] = info.class_name;
-	root["short_name"] = info.short_name;
 	root["description"] = info.description;
+	root["parent_effect_id"] = info.parent_effect_id;
 	root["has_video"] = info.has_video;
 	root["has_audio"] = info.has_audio;
+	root["has_tracked_object"] = info.has_tracked_object;
 	root["order"] = Order();
 
 	// return JsonValue
@@ -95,51 +107,122 @@ Json::Value EffectBase::JsonValue() {
 }
 
 // Load JSON string into this object
-void EffectBase::SetJson(string value) {
+void EffectBase::SetJson(const std::string value) {
 
 	// Parse JSON string into JSON objects
-	Json::Value root;
-	Json::Reader reader;
-	bool success = reader.parse( value, root );
-	if (!success)
-		// Raise exception
-		throw InvalidJSON("JSON could not be parsed (or is invalid)", "");
-
 	try
 	{
+		Json::Value root = openshot::stringToJson(value);
 		// Set all values that match
 		SetJsonValue(root);
 	}
-	catch (exception e)
+	catch (const std::exception& e)
 	{
 		// Error parsing JSON (or missing keys)
-		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)", "");
+		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)");
 	}
 }
 
-// Load Json::JsonValue into this object
-void EffectBase::SetJsonValue(Json::Value root) {
+// Load Json::Value into this object
+void EffectBase::SetJsonValue(const Json::Value root) {
+
+	if (ParentTimeline()){
+		// Get parent timeline
+		Timeline* parentTimeline = (Timeline *) ParentTimeline();
+
+		// Get the list of effects on the timeline
+		std::list<EffectBase*> effects = parentTimeline->ClipEffects();
+
+		// TODO: Fix recursive call for Object Detection
+
+		// // Loop through the effects and check if we have a child effect linked to this effect
+		for (auto const& effect : effects){
+			// Set the properties of all effects which parentEffect points to this
+			if ((effect->info.parent_effect_id == this->Id()) && (effect->Id() != this->Id()))
+				effect->SetJsonValue(root);
+		}
+	}
+
+	// Set this effect properties with the parent effect properties (except the id and parent_effect_id)
+    Json::Value my_root;
+	if (parentEffect){
+		my_root = parentEffect->JsonValue();
+		my_root["id"] = this->Id();
+		my_root["parent_effect_id"] = this->info.parent_effect_id;
+	} else {
+        my_root = root;
+    }
 
 	// Set parent data
-	ClipBase::SetJsonValue(root);
+	ClipBase::SetJsonValue(my_root);
 
 	// Set data from Json (if key is found)
-	if (!root["order"].isNull())
-		Order(root["order"].asInt());
+	if (!my_root["order"].isNull())
+		Order(my_root["order"].asInt());
+
+	if (!my_root["parent_effect_id"].isNull()){
+		info.parent_effect_id = my_root["parent_effect_id"].asString();
+		if (info.parent_effect_id.size() > 0 && info.parent_effect_id != "" && parentEffect == NULL)
+			SetParentEffect(info.parent_effect_id);
+		else
+			parentEffect = NULL;
+	}
 }
 
-// Generate Json::JsonValue for this object
-Json::Value EffectBase::JsonInfo() {
+// Generate Json::Value for this object
+Json::Value EffectBase::JsonInfo() const {
 
 	// Create root json object
 	Json::Value root;
 	root["name"] = info.name;
 	root["class_name"] = info.class_name;
-	root["short_name"] = info.short_name;
 	root["description"] = info.description;
 	root["has_video"] = info.has_video;
 	root["has_audio"] = info.has_audio;
 
 	// return JsonValue
 	return root;
+}
+
+/// Parent clip object of this reader (which can be unparented and NULL)
+openshot::ClipBase* EffectBase::ParentClip() {
+	return clip;
+}
+
+/// Set parent clip object of this reader
+void EffectBase::ParentClip(openshot::ClipBase* new_clip) {
+	clip = new_clip;
+}
+
+// Set the parent effect from which this properties will be set to
+void EffectBase::SetParentEffect(std::string parentEffect_id) {
+
+	// Get parent Timeline
+	Timeline* parentTimeline = (Timeline *) ParentTimeline();
+
+	if (parentTimeline){
+
+		// Get a pointer to the parentEffect
+		EffectBase* parentEffectPtr = parentTimeline->GetClipEffect(parentEffect_id);
+
+		if (parentEffectPtr){
+			// Set the parent Effect
+			parentEffect = parentEffectPtr;
+
+			// Set the properties of this effect with the parent effect's properties
+			Json::Value EffectJSON = parentEffect->JsonValue();
+			EffectJSON["id"] = this->Id();
+			EffectJSON["parent_effect_id"] = this->info.parent_effect_id;
+			this->SetJsonValue(EffectJSON);
+		}
+	}
+	return;
+}
+
+// Return the ID of this effect's parent clip
+std::string EffectBase::ParentClipId() const{
+	if(clip)
+		return clip->Id();
+	else
+		return "";
 }

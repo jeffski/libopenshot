@@ -3,9 +3,12 @@
  * @brief Source file for RendererBase class
  * @author Duzy Chan <code@duzy.info>
  *
- * @section LICENSE
+ * @ref License
+ */
+
+/* LICENSE
  *
- * Copyright (c) 2008-2014 OpenShot Studios, LLC
+ * Copyright (c) 2008-2019 OpenShot Studios, LLC
  * <http://www.openshotstudios.com/>. This file is part of
  * OpenShot Library (libopenshot), an open-source project dedicated to
  * delivering high quality video editing and animation solutions to the
@@ -25,7 +28,7 @@
  * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../include/RendererBase.h"
+#include "RendererBase.h"
 using namespace openshot;
 
 RendererBase::RendererBase()

@@ -3,9 +3,12 @@
  * @brief Source file for Color Shift effect class
  * @author Jonathan Thomas <jonathan@openshot.org>
  *
- * @section LICENSE
+ * @ref License
+ */
+
+/* LICENSE
  *
- * Copyright (c) 2008-2014 OpenShot Studios, LLC
+ * Copyright (c) 2008-2019 OpenShot Studios, LLC
  * <http://www.openshotstudios.com/>. This file is part of
  * OpenShot Library (libopenshot), an open-source project dedicated to
  * delivering high quality video editing and animation solutions to the
@@ -25,12 +28,13 @@
  * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../../include/effects/ColorShift.h"
+#include "ColorShift.h"
+#include "Exceptions.h"
 
 using namespace openshot;
 
 /// Blank constructor, useful when using Json to load the effect properties
-ColorShift::ColorShift() : red_x(-0.05), red_y(0.0), green_x(0.05), green_y(0.0), blue_x(0.0), blue_y(0.0), alpha_x(0.0), alpha_y(0.0) {
+ColorShift::ColorShift() : red_x(0.0), red_y(0.0), green_x(0.0), green_y(0.0), blue_x(0.0), blue_y(0.0), alpha_x(0.0), alpha_y(0.0) {
 	// Init effect properties
 	init_effect_details();
 }
@@ -50,7 +54,7 @@ void ColorShift::init_effect_details()
 	InitEffectInfo();
 
 	/// Set the effect info
-	info.class_name = "Color Shift";
+	info.class_name = "ColorShift";
 	info.name = "Color Shift";
 	info.description = "Shift the colors of an image up, down, left, and right (with infinite wrapping).";
 	info.has_audio = false;
@@ -59,7 +63,7 @@ void ColorShift::init_effect_details()
 
 // This method is required for all derived classes of EffectBase, and returns a
 // modified openshot::Frame object
-std::shared_ptr<Frame> ColorShift::GetFrame(std::shared_ptr<Frame> frame, int64_t frame_number)
+std::shared_ptr<openshot::Frame> ColorShift::GetFrame(std::shared_ptr<openshot::Frame> frame, int64_t frame_number)
 {
 	// Get the frame's image
 	std::shared_ptr<QImage> frame_image = frame->GetImage();
@@ -72,25 +76,24 @@ std::shared_ptr<Frame> ColorShift::GetFrame(std::shared_ptr<Frame> frame, int64_
 	// Get the current shift amount, and clamp to range (-1 to 1 range)
 	// Red Keyframes
 	float red_x_shift = red_x.GetValue(frame_number);
-	int red_x_shift_limit = round(frame_image_width * fmod(abs(red_x_shift), 1.0));
+	int red_x_shift_limit = round(frame_image_width * fmod(fabs(red_x_shift), 1.0));
 	float red_y_shift = red_y.GetValue(frame_number);
-	int red_y_shift_limit = round(frame_image_height * fmod(abs(red_y_shift), 1.0));
+	int red_y_shift_limit = round(frame_image_height * fmod(fabs(red_y_shift), 1.0));
 	// Green Keyframes
 	float green_x_shift = green_x.GetValue(frame_number);
-	int green_x_shift_limit = round(frame_image_width * fmod(abs(green_x_shift), 1.0));
+	int green_x_shift_limit = round(frame_image_width * fmod(fabs(green_x_shift), 1.0));
 	float green_y_shift = green_y.GetValue(frame_number);
-	int green_y_shift_limit = round(frame_image_height * fmod(abs(green_y_shift), 1.0));
+	int green_y_shift_limit = round(frame_image_height * fmod(fabs(green_y_shift), 1.0));
 	// Blue Keyframes
 	float blue_x_shift = blue_x.GetValue(frame_number);
-	int blue_x_shift_limit = round(frame_image_width * fmod(abs(blue_x_shift), 1.0));
+	int blue_x_shift_limit = round(frame_image_width * fmod(fabs(blue_x_shift), 1.0));
 	float blue_y_shift = blue_y.GetValue(frame_number);
-	int blue_y_shift_limit = round(frame_image_height * fmod(abs(blue_y_shift), 1.0));
+	int blue_y_shift_limit = round(frame_image_height * fmod(fabs(blue_y_shift), 1.0));
 	// Alpha Keyframes
 	float alpha_x_shift = alpha_x.GetValue(frame_number);
-	int alpha_x_shift_limit = round(frame_image_width * fmod(abs(alpha_x_shift), 1.0));
+	int alpha_x_shift_limit = round(frame_image_width * fmod(fabs(alpha_x_shift), 1.0));
 	float alpha_y_shift = alpha_y.GetValue(frame_number);
-	int alpha_y_shift_limit = round(frame_image_height * fmod(abs(alpha_y_shift), 1.0));
-
+	int alpha_y_shift_limit = round(frame_image_height * fmod(fabs(alpha_y_shift), 1.0));
 
 	// Make temp copy of pixels
 	unsigned char *temp_image = new unsigned char[frame_image_width * frame_image_height * 4]();
@@ -126,7 +129,6 @@ std::shared_ptr<Frame> ColorShift::GetFrame(std::shared_ptr<Frame> frame, int64_
 			green_starting_row_index = starting_row_index;
 			blue_starting_row_index = starting_row_index;
 			alpha_starting_row_index = starting_row_index;
-
 
 			red_pixel_offset = 0;
 			green_pixel_offset = 0;
@@ -191,14 +193,14 @@ std::shared_ptr<Frame> ColorShift::GetFrame(std::shared_ptr<Frame> frame, int64_
 }
 
 // Generate JSON string of this object
-string ColorShift::Json() {
+std::string ColorShift::Json() const {
 
 	// Return formatted string
 	return JsonValue().toStyledString();
 }
 
-// Generate Json::JsonValue for this object
-Json::Value ColorShift::JsonValue() {
+// Generate Json::Value for this object
+Json::Value ColorShift::JsonValue() const {
 
 	// Create root json object
 	Json::Value root = EffectBase::JsonValue(); // get parent properties
@@ -217,30 +219,24 @@ Json::Value ColorShift::JsonValue() {
 }
 
 // Load JSON string into this object
-void ColorShift::SetJson(string value) {
+void ColorShift::SetJson(const std::string value) {
 
 	// Parse JSON string into JSON objects
-	Json::Value root;
-	Json::Reader reader;
-	bool success = reader.parse( value, root );
-	if (!success)
-		// Raise exception
-		throw InvalidJSON("JSON could not be parsed (or is invalid)", "");
-
 	try
 	{
+		const Json::Value root = openshot::stringToJson(value);
 		// Set all values that match
 		SetJsonValue(root);
 	}
-	catch (exception e)
+	catch (const std::exception& e)
 	{
 		// Error parsing JSON (or missing keys)
-		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)", "");
+		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)");
 	}
 }
 
-// Load Json::JsonValue into this object
-void ColorShift::SetJsonValue(Json::Value root) {
+// Load Json::Value into this object
+void ColorShift::SetJsonValue(const Json::Value root) {
 
 	// Set parent data
 	EffectBase::SetJsonValue(root);
@@ -265,7 +261,7 @@ void ColorShift::SetJsonValue(Json::Value root) {
 }
 
 // Get all properties for a specific frame
-string ColorShift::PropertiesJSON(int64_t requested_frame) {
+std::string ColorShift::PropertiesJSON(int64_t requested_frame) const {
 
 	// Generate JSON properties list
 	Json::Value root;
@@ -286,7 +282,9 @@ string ColorShift::PropertiesJSON(int64_t requested_frame) {
 	root["alpha_x"] = add_property_json("Alpha X Shift", alpha_x.GetValue(requested_frame), "float", "", &alpha_x, -1, 1, false, requested_frame);
 	root["alpha_y"] = add_property_json("Alpha Y Shift", alpha_y.GetValue(requested_frame), "float", "", &alpha_y, -1, 1, false, requested_frame);
 
+	// Set the parent effect which properties this effect will inherit
+	root["parent_effect_id"] = add_property_json("Parent", 0.0, "string", info.parent_effect_id, NULL, -1, -1, false, requested_frame);
+
 	// Return formatted string
 	return root.toStyledString();
 }
-

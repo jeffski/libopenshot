@@ -3,9 +3,12 @@
  * @brief Source file for Point class
  * @author Jonathan Thomas <jonathan@openshot.org>
  *
- * @section LICENSE
+ * @ref License
+ */
+
+/* LICENSE
  *
- * Copyright (c) 2008-2014 OpenShot Studios, LLC
+ * Copyright (c) 2008-2019 OpenShot Studios, LLC
  * <http://www.openshotstudios.com/>. This file is part of
  * OpenShot Library (libopenshot), an open-source project dedicated to
  * delivering high quality video editing and animation solutions to the
@@ -25,63 +28,33 @@
  * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../include/Point.h"
+#include "Point.h"
+#include "Exceptions.h"
 
 using namespace std;
 using namespace openshot;
 
-// Default constructor (defaults to 0,0)
-Point::Point() : interpolation(BEZIER), handle_type(AUTO)
-{
-	// set new coorinate
-	co = Coordinate(1, 0);
+// Default constructor
+Point::Point() : Point::Point(Coordinate(1, 0), BEZIER, AUTO) {};
 
-	// set handles
-	Initialize_Handles();
-}
+// Constructor which creates a single coordinate at X=1
+Point::Point(float y) : Point::Point(Coordinate(1, y), CONSTANT, AUTO) {};
 
-// Constructor which creates a single coordinate at X=0
-Point::Point(float y) :
-	interpolation(CONSTANT), handle_type(AUTO) {
-	// set new coorinate
-	co = Coordinate(1, y);
+// Constructor which creates a Bezier curve with point at (x, y)
+Point::Point(float x, float y) : Point::Point(Coordinate(x, y), BEZIER, AUTO) {};
 
-	// set handles
-	Initialize_Handles();
-}
+// Constructor which also creates a Point, setting X,Y, and interpolation.
+Point::Point(float x, float y, InterpolationType interpolation)
+	: Point::Point(Coordinate(x, y), interpolation, AUTO) {};
 
-Point::Point(float x, float y) :
-	interpolation(BEZIER), handle_type(AUTO) {
-	// set new coorinate
-	co = Coordinate(x, y);
 
-	// set handles
-	Initialize_Handles();
-}
+// Direct Coordinate-accepting constructors
+Point::Point(const Coordinate& co) : Point::Point(co, BEZIER, AUTO) {};
 
-// Constructor which also creates a Point and sets the X,Y, and interpolation of the Point.
-Point::Point(float x, float y, InterpolationType interpolation) :
-		handle_type(AUTO), interpolation(interpolation) {
-	// set new coorinate
-	co = Coordinate(x, y);
+Point::Point(const Coordinate& co, InterpolationType interpolation)
+	: Point::Point(co, interpolation, AUTO) {};
 
-	// set handles
-	Initialize_Handles();
-}
-
-Point::Point(Coordinate co) :
-	co(co), interpolation(BEZIER), handle_type(AUTO) {
-	// set handles
-	Initialize_Handles();
-}
-
-Point::Point(Coordinate co, InterpolationType interpolation) :
-	co(co), interpolation(interpolation), handle_type(AUTO) {
-	// set handles
-	Initialize_Handles();
-}
-
-Point::Point(Coordinate co, InterpolationType interpolation, HandleType handle_type) :
+Point::Point(const Coordinate& co, InterpolationType interpolation, HandleType handle_type) :
 	co(co), interpolation(interpolation), handle_type(handle_type) {
 	// set handles
 	Initialize_Handles();
@@ -105,14 +78,14 @@ void Point::Initialize_RightHandle(float x, float y) {
 }
 
 // Generate JSON string of this object
-string Point::Json() {
+std::string Point::Json() const {
 
 	// Return formatted string
 	return JsonValue().toStyledString();
 }
 
-// Generate Json::JsonValue for this object
-Json::Value Point::JsonValue() {
+// Generate Json::Value for this object
+Json::Value Point::JsonValue() const {
 
 	// Create root json object
 	Json::Value root;
@@ -129,30 +102,24 @@ Json::Value Point::JsonValue() {
 }
 
 // Load JSON string into this object
-void Point::SetJson(string value) {
+void Point::SetJson(const std::string value) {
 
 	// Parse JSON string into JSON objects
-	Json::Value root;
-	Json::Reader reader;
-	bool success = reader.parse( value, root );
-	if (!success)
-		// Raise exception
-		throw InvalidJSON("JSON could not be parsed (or is invalid)", "");
-
 	try
 	{
+		const Json::Value root = openshot::stringToJson(value);
 		// Set all values that match
 		SetJsonValue(root);
 	}
-	catch (exception e)
+	catch (const std::exception& e)
 	{
 		// Error parsing JSON (or missing keys)
-		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)", "");
+		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)");
 	}
 }
 
-// Load Json::JsonValue into this object
-void Point::SetJsonValue(Json::Value root) {
+// Load Json::Value into this object
+void Point::SetJsonValue(const Json::Value root) {
 
 	if (!root["co"].isNull())
 		co.SetJsonValue(root["co"]); // update coordinate

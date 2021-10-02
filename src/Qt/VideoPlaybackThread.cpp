@@ -4,9 +4,12 @@
  * @author Duzy Chan <code@duzy.info>
  * @author Jonathan Thomas <jonathan@openshot.org>
  *
- * @section LICENSE
+ * @ref License
+ */
+
+/* LICENSE
  *
- * Copyright (c) 2008-2014 OpenShot Studios, LLC
+ * Copyright (c) 2008-2019 OpenShot Studios, LLC
  * <http://www.openshotstudios.com/>. This file is part of
  * OpenShot Library (libopenshot), an open-source project dedicated to
  * delivering high quality video editing and animation solutions to the
@@ -26,7 +29,7 @@
  * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../../include/Qt/VideoPlaybackThread.h"
+#include "VideoPlaybackThread.h"
 
 namespace openshot
 {
@@ -61,7 +64,7 @@ namespace openshot
 		if (need_render && frame)
 		{
 			// Debug
-			ZmqLogger::Instance()->AppendDebugMethod("VideoPlaybackThread::run (before render)", "frame->number", frame->number, "need_render", need_render, "", -1, "", -1, "", -1, "", -1);
+			ZmqLogger::Instance()->AppendDebugMethod("VideoPlaybackThread::run (before render)", "frame->number", frame->number, "need_render", need_render);
 
 			// Render the frame to the screen
 			renderer->paint(frame);

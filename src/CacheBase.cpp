@@ -3,9 +3,12 @@
  * @brief Source file for CacheBase class
  * @author Jonathan Thomas <jonathan@openshot.org>
  *
- * @section LICENSE
+ * @ref License
+ */
+
+/* LICENSE
  *
- * Copyright (c) 2008-2014 OpenShot Studios, LLC
+ * Copyright (c) 2008-2019 OpenShot Studios, LLC
  * <http://www.openshotstudios.com/>. This file is part of
  * OpenShot Library (libopenshot), an open-source project dedicated to
  * delivering high quality video editing and animation solutions to the
@@ -25,7 +28,7 @@
  * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../include/CacheBase.h"
+#include "CacheBase.h"
 
 using namespace std;
 using namespace openshot;
@@ -34,13 +37,13 @@ using namespace openshot;
 CacheBase::CacheBase() : max_bytes(0) {
 	// Init the critical section
 	cacheCriticalSection = new CriticalSection();
-};
+}
 
 // Constructor that sets the max frames to cache
 CacheBase::CacheBase(int64_t max_bytes) : max_bytes(max_bytes) {
 	// Init the critical section
 	cacheCriticalSection = new CriticalSection();
-};
+}
 
 // Set maximum bytes to a different amount based on a ReaderInfo struct
 void CacheBase::SetMaxBytesFromInfo(int64_t number_of_frames, int width, int height, int sample_rate, int channels)
@@ -50,12 +53,12 @@ void CacheBase::SetMaxBytesFromInfo(int64_t number_of_frames, int width, int hei
 	SetMaxBytes(bytes);
 }
 
-// Generate Json::JsonValue for this object
+// Generate Json::Value for this object
 Json::Value CacheBase::JsonValue() {
 
 	// Create root json object
 	Json::Value root;
-	stringstream max_bytes_stream;
+	std::stringstream max_bytes_stream;
 	max_bytes_stream << max_bytes;
 	root["max_bytes"] = max_bytes_stream.str();
 
@@ -63,10 +66,10 @@ Json::Value CacheBase::JsonValue() {
 	return root;
 }
 
-// Load Json::JsonValue into this object
-void CacheBase::SetJsonValue(Json::Value root) {
+// Load Json::Value into this object
+void CacheBase::SetJsonValue(const Json::Value root) {
 
 	// Set data from Json (if key is found)
 	if (!root["max_bytes"].isNull())
-		max_bytes = atoll(root["max_bytes"].asString().c_str());
+		max_bytes = std::stoll(root["max_bytes"].asString());
 }

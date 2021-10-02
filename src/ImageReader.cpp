@@ -3,9 +3,12 @@
  * @brief Source file for ImageReader class
  * @author Jonathan Thomas <jonathan@openshot.org>
  *
- * @section LICENSE
+ * @ref License
+ */
+
+/* LICENSE
  *
- * Copyright (c) 2008-2014 OpenShot Studios, LLC
+ * Copyright (c) 2008-2019 OpenShot Studios, LLC
  * <http://www.openshotstudios.com/>. This file is part of
  * OpenShot Library (libopenshot), an open-source project dedicated to
  * delivering high quality video editing and animation solutions to the
@@ -25,20 +28,17 @@
  * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../include/ImageReader.h"
+// Require ImageMagick support
+#ifdef USE_IMAGEMAGICK
+
+#include "ImageReader.h"
+#include "Exceptions.h"
 
 using namespace openshot;
 
-ImageReader::ImageReader(string path) : path(path), is_open(false)
+ImageReader::ImageReader(const std::string& path, bool inspect_reader) : path(path), is_open(false)
 {
-	// Open and Close the reader, to populate it's attributes (such as height, width, etc...)
-	Open();
-	Close();
-}
-
-ImageReader::ImageReader(string path, bool inspect_reader) : path(path), is_open(false)
-{
-	// Open and Close the reader, to populate it's attributes (such as height, width, etc...)
+	// Open and Close the reader, to populate its attributes (such as height, width, etc...)
 	if (inspect_reader) {
 		Open();
 		Close();
@@ -55,13 +55,13 @@ void ImageReader::Open()
 		try
 		{
 			// load image
-			image = std::shared_ptr<Magick::Image>(new Magick::Image(path));
+			image = std::make_shared<Magick::Image>(path);
 
 			// Give image a transparent background color
 			image->backgroundColor(Magick::Color("none"));
-			image->matte(true);
+			MAGICK_IMAGE_ALPHA(image, true);
 		}
-		catch (Magick::Exception e) {
+		catch (const Magick::Exception& e) {
 			// raise exception
 			throw InvalidFile("File could not be opened.", path);
 		}
@@ -76,7 +76,7 @@ void ImageReader::Open()
 		info.height = image->size().height();
 		info.pixel_ratio.num = 1;
 		info.pixel_ratio.den = 1;
-		info.duration = 60 * 60 * 24; // 24 hour duration
+		info.duration = 60 * 60 * 1;  // 1 hour duration
 		info.fps.num = 30;
 		info.fps.den = 1;
 		info.video_timebase.num = 1;
@@ -106,7 +106,7 @@ void ImageReader::Close()
 	{
 		// Mark as "closed"
 		is_open = false;
-		
+
 		// Delete the image
 		image.reset();
 	}
@@ -120,7 +120,9 @@ std::shared_ptr<Frame> ImageReader::GetFrame(int64_t requested_frame)
 		throw ReaderClosed("The FFmpegReader is closed.  Call Open() before calling this method.", path);
 
 	// Create or get frame object
-	std::shared_ptr<Frame> image_frame(new Frame(requested_frame, image->size().width(), image->size().height(), "#000000", 0, 2));
+	auto image_frame = std::make_shared<Frame>(
+		requested_frame, image->size().width(), image->size().height(),
+		"#000000", 0, 2);
 
 	// Add Image data to frame
 	image_frame->AddMagickImage(image);
@@ -130,14 +132,14 @@ std::shared_ptr<Frame> ImageReader::GetFrame(int64_t requested_frame)
 }
 
 // Generate JSON string of this object
-string ImageReader::Json() {
+std::string ImageReader::Json() const {
 
 	// Return formatted string
 	return JsonValue().toStyledString();
 }
 
-// Generate Json::JsonValue for this object
-Json::Value ImageReader::JsonValue() {
+// Generate Json::Value for this object
+Json::Value ImageReader::JsonValue() const {
 
 	// Create root json object
 	Json::Value root = ReaderBase::JsonValue(); // get parent properties
@@ -149,30 +151,24 @@ Json::Value ImageReader::JsonValue() {
 }
 
 // Load JSON string into this object
-void ImageReader::SetJson(string value) {
+void ImageReader::SetJson(const std::string value) {
 
 	// Parse JSON string into JSON objects
-	Json::Value root;
-	Json::Reader reader;
-	bool success = reader.parse( value, root );
-	if (!success)
-		// Raise exception
-		throw InvalidJSON("JSON could not be parsed (or is invalid)", "");
-
 	try
 	{
+		const Json::Value root = openshot::stringToJson(value);
 		// Set all values that match
 		SetJsonValue(root);
 	}
-	catch (exception e)
+	catch (const std::exception& e)
 	{
 		// Error parsing JSON (or missing keys)
-		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)", "");
+		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)");
 	}
 }
 
-// Load Json::JsonValue into this object
-void ImageReader::SetJsonValue(Json::Value root) {
+// Load Json::Value into this object
+void ImageReader::SetJsonValue(const Json::Value root) {
 
 	// Set parent data
 	ReaderBase::SetJsonValue(root);
@@ -188,3 +184,5 @@ void ImageReader::SetJsonValue(Json::Value root) {
 		Open();
 	}
 }
+
+#endif //USE_IMAGEMAGICK

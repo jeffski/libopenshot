@@ -3,9 +3,12 @@
  * @brief Source file for Fraction class
  * @author Jonathan Thomas <jonathan@openshot.org>
  *
- * @section LICENSE
+ * @ref License
+ */
+
+/* LICENSE
  *
- * Copyright (c) 2008-2014 OpenShot Studios, LLC
+ * Copyright (c) 2008-2019 OpenShot Studios, LLC
  * <http://www.openshotstudios.com/>. This file is part of
  * OpenShot Library (libopenshot), an open-source project dedicated to
  * delivering high quality video editing and animation solutions to the
@@ -25,14 +28,24 @@
  * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../include/Fraction.h"
+#include "Fraction.h"
+#include <cmath>
 
 using namespace openshot;
 
-// Constructor
-Fraction::Fraction() :
-	num(1), den(1) {
-}
+// Delegating constructors
+Fraction::Fraction() : Fraction::Fraction(1, 1) {};
+
+Fraction::Fraction(std::pair<int, int> pair)
+	: Fraction::Fraction(pair.first, pair.second) {};
+
+Fraction::Fraction(std::map<std::string, int> mapping)
+	: Fraction::Fraction(mapping["num"], mapping["den"]) {};
+
+Fraction::Fraction(std::vector<int> vector)
+	: Fraction::Fraction(vector[0], vector[1]) {};
+
+// Full constructor
 Fraction::Fraction(int num, int den) :
 	num(num), den(den) {
 }
@@ -43,7 +56,7 @@ float Fraction::ToFloat() {
 }
 
 // Return this fraction as a double (i.e. 1/2 = 0.5)
-double Fraction::ToDouble() {
+double Fraction::ToDouble() const {
 	return double(num) / double(den);
 }
 
@@ -78,7 +91,7 @@ void Fraction::Reduce() {
 }
 
 // Return the reciprocal as a new Fraction
-Fraction Fraction::Reciprocal()
+Fraction Fraction::Reciprocal() const
 {
 	// flip the fraction
 	return Fraction(den, num);

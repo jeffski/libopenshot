@@ -4,10 +4,10 @@
 #
 # @section LICENSE
 #
-# Copyright (c) 2008-2014 OpenShot Studios, LLC
+# Copyright (c) 2008-2019 OpenShot Studios, LLC
 # <http://www.openshotstudios.com/>. This file is part of
-# OpenShot Library (libopenshot), an open-source project dedicated to 
-# delivering high quality video editing and animation solutions to the 
+# OpenShot Library (libopenshot), an open-source project dedicated to
+# delivering high quality video editing and animation solutions to the
 # world. For more information visit <http://www.openshot.org/>.
 #
 # OpenShot Library (libopenshot) is free software: you can redistribute it
@@ -24,208 +24,107 @@
 # along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
 ################################################################################
 
-SET(TEST_MEDIA_PATH "${openshot_SOURCE_DIR}/src/examples/")
+# Allow spaces in test names
+if(POLICY CMP0110)
+  cmake_policy(SET CMP0110 NEW)
+endif()
 
-################ WINDOWS ##################
-# Set some compiler options for Windows
-# required for libopenshot-audio headers
-IF (WIN32)
-	STRING(REPLACE "/" "\\\\" TEST_MEDIA_PATH TEST_MEDIA_PATH)
-	add_definitions( -DIGNORE_JUCE_HYPOT=1 )
-	SET(CMAKE_CXX_FLAGS " ${CMAKE_CXX_FLAGS} -include cmath")
-ENDIF(WIN32)
-
-add_definitions( -DTEST_MEDIA_PATH="${TEST_MEDIA_PATH}" )
-
-################### UNITTEST++ #####################
-# Find UnitTest++ libraries (used for unit testing)
-FIND_PACKAGE(UnitTest++ REQUIRED)
-
-# Include UnitTest++ headers (needed for compile)
-include_directories(${UNITTEST++_INCLUDE_DIR})
-
-################ IMAGE MAGICK ##################
-# Set the Quantum Depth that ImageMagick was built with (default to 16 bits)
-IF (MAGICKCORE_QUANTUM_DEPTH)
-	add_definitions( -DMAGICKCORE_QUANTUM_DEPTH=${MAGICKCORE_QUANTUM_DEPTH} )
-ELSE (MAGICKCORE_QUANTUM_DEPTH)
-	add_definitions( -DMAGICKCORE_QUANTUM_DEPTH=16 )
-ENDIF (MAGICKCORE_QUANTUM_DEPTH)
-IF (MAGICKCORE_HDRI_ENABLE)
-	add_definitions( -DMAGICKCORE_HDRI_ENABLE=${MAGICKCORE_HDRI_ENABLE} )
-ELSE (MAGICKCORE_HDRI_ENABLE)
-	add_definitions( -DMAGICKCORE_HDRI_ENABLE=0 )
-ENDIF (MAGICKCORE_HDRI_ENABLE)
-IF (OPENSHOT_IMAGEMAGICK_COMPATIBILITY)
-	add_definitions( -DOPENSHOT_IMAGEMAGICK_COMPATIBILITY=${OPENSHOT_IMAGEMAGICK_COMPATIBILITY} )
-ELSE (OPENSHOT_IMAGEMAGICK_COMPATIBILITY)
-	add_definitions( -DOPENSHOT_IMAGEMAGICK_COMPATIBILITY=0 )
-ENDIF (OPENSHOT_IMAGEMAGICK_COMPATIBILITY)
-
-# Find the ImageMagick++ library
-FIND_PACKAGE(ImageMagick COMPONENTS Magick++ MagickWand MagickCore)
-IF (ImageMagick_FOUND)
-	# Include ImageMagick++ headers (needed for compile)
-	include_directories(${ImageMagick_INCLUDE_DIRS})
-
-	# define a global var (used in the C++)
-	add_definitions( -DUSE_IMAGEMAGICK=1 )
-	SET(CMAKE_SWIG_FLAGS "-DUSE_IMAGEMAGICK=1")
-
-ENDIF (ImageMagick_FOUND)
-
-################### FFMPEG #####################
-# Find FFmpeg libraries (used for video encoding / decoding)
-FIND_PACKAGE(FFmpeg REQUIRED)
-
-# Include FFmpeg headers (needed for compile)
-IF (AVCODEC_FOUND)
-	include_directories(${AVCODEC_INCLUDE_DIRS})
-ENDIF (AVCODEC_FOUND)
-IF (AVDEVICE_FOUND)
-	include_directories(${AVDEVICE_INCLUDE_DIRS})
-ENDIF (AVDEVICE_FOUND)
-IF (AVFORMAT_FOUND)
-	include_directories(${AVFORMAT_INCLUDE_DIRS})
-ENDIF (AVFORMAT_FOUND)
-IF (AVFILTER_FOUND)
-	include_directories(${AVFILTER_INCLUDE_DIRS})
-ENDIF (AVFILTER_FOUND)
-IF (AVUTIL_FOUND)
-	include_directories(${AVUTIL_INCLUDE_DIRS})
-ENDIF (AVUTIL_FOUND)
-IF (POSTPROC_FOUND)
-	include_directories(${POSTPROC_INCLUDE_DIRS})
-ENDIF (POSTPROC_FOUND)
-IF (SWSCALE_FOUND)
-	include_directories(${SWSCALE_INCLUDE_DIRS})
-ENDIF (SWSCALE_FOUND)
-IF (SWRESAMPLE_FOUND)
-	include_directories(${SWRESAMPLE_INCLUDE_DIRS})
-ENDIF (SWRESAMPLE_FOUND)
-IF (AVRESAMPLE_FOUND)
-	include_directories(${AVRESAMPLE_INCLUDE_DIRS})
-ENDIF (AVRESAMPLE_FOUND)
-
-################# LIBOPENSHOT-AUDIO ###################
-# Find JUCE-based openshot Audio libraries
-FIND_PACKAGE(OpenShotAudio REQUIRED)
-
-# Include Juce headers (needed for compile)
-include_directories(${LIBOPENSHOT_AUDIO_INCLUDE_DIRS})
-
-################# QT5 ###################
-# Find QT5 libraries
-find_package(Qt5Widgets REQUIRED)
-find_package(Qt5Core REQUIRED)
-find_package(Qt5Gui REQUIRED)
-find_package(Qt5Multimedia REQUIRED)
-find_package(Qt5MultimediaWidgets REQUIRED)
-
-# Include Qt headers (needed for compile)
-include_directories(${Qt5Widgets_INCLUDE_DIRS})
-include_directories(${Qt5Core_INCLUDE_DIRS})
-include_directories(${Qt5Gui_INCLUDE_DIRS})
-include_directories(${Qt5Multimedia_INCLUDE_DIRS})
-include_directories(${Qt5MultimediaWidgets_INCLUDE_DIRS})
-
-add_definitions(${Qt5Widgets_DEFINITIONS})
-add_definitions(${Qt5Core_DEFINITIONS})
-add_definitions(${Qt5Gui_DEFINITIONS})
-add_definitions(${Qt5Multimedia_DEFINITIONS})
-add_definitions(${Qt5MultimediaWidgets_DEFINITIONS})
-
-SET(QT_LIBRARIES ${Qt5Widgets_LIBRARIES} 
-				 ${Qt5Core_LIBRARIES}
-				 ${Qt5Gui_LIBRARIES}
-				 ${Qt5Multimedia_LIBRARIES}
-				 ${Qt5MultimediaWidgets_LIBRARIES})
-
-# Set compiler flags for Qt
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${Qt5Widgets_EXECUTABLE_COMPILE_FLAGS} ")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${Qt5Core_EXECUTABLE_COMPILE_FLAGS} ")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${Qt5Gui_EXECUTABLE_COMPILE_FLAGS} ")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${Qt5Multimedia_EXECUTABLE_COMPILE_FLAGS} ")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${Qt5MultimediaWidgets_EXECUTABLE_COMPILE_FLAGS} ")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -ggdb ")
-
-# Manually moc Qt files
-qt5_wrap_cpp(MOC_FILES ${QT_HEADER_FILES})
-
+# Test media path, used by unit tests for input data
+file(TO_NATIVE_PATH "${PROJECT_SOURCE_DIR}/examples/" TEST_MEDIA_PATH)
 
 ################# BLACKMAGIC DECKLINK ###################
-IF (ENABLE_BLACKMAGIC)
+if(ENABLE_BLACKMAGIC)
 	# Find BlackMagic DeckLinkAPI libraries
-	FIND_PACKAGE(BlackMagic)
-	
-	IF (BLACKMAGIC_FOUND)
+	find_package(BlackMagic)
+
+	if(BLACKMAGIC_FOUND)
 		# Include Blackmagic headers (needed for compile)
 		include_directories(${BLACKMAGIC_INCLUDE_DIR})
-	ENDIF (BLACKMAGIC_FOUND)
-ENDIF (ENABLE_BLACKMAGIC)
+	endif()
+endif()
 
-################### OPENMP #####################
-# Check for OpenMP (used for multi-core processing)
-FIND_PACKAGE(OpenMP)
+###
+###  TEST SOURCE FILES
+###
+set(OPENSHOT_TESTS
+  CacheDisk
+  CacheMemory
+  Clip
+  Color
+  Coordinate
+  DummyReader
+  FFmpegReader
+  FFmpegWriter
+  Fraction
+  Frame
+  FrameMapper
+  KeyFrame
+  Point
+  QtImageReader
+  ReaderBase
+  Settings
+  Timeline
+)
 
-if (OPENMP_FOUND)
-   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS} ")
-endif(OPENMP_FOUND)
+# ImageMagick related test files
+if($CACHE{HAVE_IMAGEMAGICK})
+  list(APPEND OPENSHOT_TESTS
+    ImageWriter
+  )
+endif()
 
-################### ZEROMQ #####################
-# Find ZeroMQ library (used for socket communication & logging)
-FIND_PACKAGE(ZMQ REQUIRED)
+# OPENCV RELATED TEST FILES
+if($CACHE{HAVE_OPENCV})
+  list(APPEND OPENSHOT_TESTS
+    CVTracker
+    CVStabilizer
+    # CVObjectDetection
+  )
+endif()
 
-# Include ZeroMQ headers (needed for compile)
-include_directories(${ZMQ_INCLUDE_DIRS})
+###
+### Catch2 unit tests
+###
+include(CTest)
+include(Catch)
 
-################### RESVG #####################
-# Find resvg library (used for rendering svg files)
-FIND_PACKAGE(RESVG)
+if(NOT BUILD_TESTING)
+  return()
+endif()
 
-# Include resvg headers (optional SVG library)
-if (RESVG_FOUND)
-	include_directories(${RESVG_INCLUDE_DIRS})
-endif(RESVG_FOUND)
+# Create object library for test executable main(),
+# to avoid recompiling for every test
+add_library(catch-main OBJECT catch_main.cpp)
+target_link_libraries(catch-main PUBLIC Catch2::Catch2)
 
-################### JSONCPP #####################
-# Include jsoncpp headers (needed for JSON parsing)
-if (USE_SYSTEM_JSONCPP)
-	find_package(JsonCpp REQUIRED)
-	include_directories(${JSONCPP_INCLUDE_DIRS})
-else()
-	include_directories("../thirdparty/jsoncpp/include")
-endif(USE_SYSTEM_JSONCPP)
+foreach(tname ${OPENSHOT_TESTS})
+  add_executable(openshot-${tname}-test ${tname}.cpp $<TARGET_OBJECTS:catch-main>)
+  target_compile_definitions(openshot-${tname}-test PRIVATE
+    TEST_MEDIA_PATH="${TEST_MEDIA_PATH}"
+  )
+  target_link_libraries(openshot-${tname}-test Catch2::Catch2 openshot)
+  # Automatically configure CTest targets from Catch2 test cases
+  catch_discover_tests(
+    openshot-${tname}-test
+    TEST_PREFIX ${tname}:
+    PROPERTIES
+      LABELS ${tname}
+  )
+  list(APPEND CATCH2_TEST_TARGETS openshot-${tname}-test)
+  list(APPEND CATCH2_TEST_NAMES ${tname})
+endforeach()
+# Add an additional special-case test, for an envvar-dependent setting
+add_test(NAME [=["Settings:Debug logging (enabled)"]=]
+  COMMAND
+    openshot-Settings-test "[environment]"
+  WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+set_tests_properties([=["Settings:Debug logging (enabled)"]=]
+  PROPERTIES
+    LABELS Settings
+    ENVIRONMENT "LIBOPENSHOT_DEBUG=1"
+)
 
-IF (NOT DISABLE_TESTS)
-	###############  SET TEST SOURCE FILES  #################
-	SET ( OPENSHOT_TEST_FILES tests.cpp
-		   Cache_Tests.cpp
-		   Clip_Tests.cpp
-		   Color_Tests.cpp
-		   Coordinate_Tests.cpp
-		   ReaderBase_Tests.cpp
-		   ImageWriter_Tests.cpp
-		   FFmpegReader_Tests.cpp
-		   FFmpegWriter_Tests.cpp
-		   Fraction_Tests.cpp
-		   FrameMapper_Tests.cpp
-		   KeyFrame_Tests.cpp
-		   Point_Tests.cpp
-		   Settings_Tests.cpp
-		   Timeline_Tests.cpp )
-
-	################ TESTER EXECUTABLE #################
-	# Create unit test executable (openshot-test)
-	add_executable(openshot-test
-				   tests.cpp
-				   ${OPENSHOT_TEST_FILES} )
-
-	# Link libraries to the new executable
-	target_link_libraries(openshot-test openshot ${UNITTEST++_LIBRARY})
-
-
-	#################### MAKE TEST ######################
-	# Hook up the 'make test' target to the 'openshot-test' executable
-	ADD_CUSTOM_TARGET(test ${CMAKE_CURRENT_BINARY_DIR}/openshot-test)
-ENDIF (NOT DISABLE_TESTS)
+# Export target list for coverage use
+set(UNIT_TEST_TARGETS ${CATCH2_TEST_TARGETS} PARENT_SCOPE)
+set(UNIT_TEST_NAMES ${CATCH2_TEST_NAMES} PARENT_SCOPE)

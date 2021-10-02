@@ -4,9 +4,12 @@
  * @author Duzy Chan <code@duzy.info>
  * @author Jonathan Thomas <jonathan@openshot.org>
  *
- * @section LICENSE
+ * @ref License
+ */
+
+/* LICENSE
  *
- * Copyright (c) 2008-2014 OpenShot Studios, LLC
+ * Copyright (c) 2008-2019 OpenShot Studios, LLC
  * <http://www.openshotstudios.com/>. This file is part of
  * OpenShot Library (libopenshot), an open-source project dedicated to
  * delivering high quality video editing and animation solutions to the
@@ -26,176 +29,212 @@
  * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../include/Clip.h"
-#include "../include/FFmpegReader.h"
-#include "../include/Timeline.h"
-#include "../include/QtPlayer.h"
-#include "../include/Qt/PlayerPrivate.h"
-#include "../include/Qt/VideoRenderer.h"
+#include "Clip.h"
+#include "FFmpegReader.h"
+#include "Timeline.h"
+#include "QtPlayer.h"
+#include "Qt/PlayerPrivate.h"
+#include "Qt/VideoRenderer.h"
 
-using namespace openshot;
-
-QtPlayer::QtPlayer() : PlayerBase(), p(new PlayerPrivate(new VideoRenderer())), threads_started(false)
+namespace openshot
 {
-	reader = NULL;
-}
+    // Delegating constructor
+    QtPlayer::QtPlayer()
+    : QtPlayer::QtPlayer(new VideoRenderer())
+    { }
 
-QtPlayer::QtPlayer(RendererBase *rb) : PlayerBase(), p(new PlayerPrivate(rb)), threads_started(false)
-{
-	reader = NULL;
-}
+    // Constructor
+    QtPlayer::QtPlayer(openshot::RendererBase *rb)
+    : PlayerBase()
+    , p(new openshot::PlayerPrivate(rb))
+    , threads_started(false)
+    {
+        reader = NULL;
+    }
 
-QtPlayer::~QtPlayer()
-{
-    if (mode != PLAYBACK_STOPPED)
-    	Stop();
+    QtPlayer::~QtPlayer()
+    {
+        if (mode != PLAYBACK_STOPPED)
+            Stop();
 
-    delete p;
-}
+        delete p;
+    }
 
-void QtPlayer::CloseAudioDevice()
-{
-	// Close audio device (only do this once, when all audio playback is finished)
-	AudioDeviceManagerSingleton::Instance(0)->CloseAudioDevice();
-}
+    void QtPlayer::CloseAudioDevice()
+    {
+    	// Close audio device (only do this once, when all audio playback is finished)
+    	openshot::AudioDeviceManagerSingleton::Instance()->CloseAudioDevice();
+    }
 
-void QtPlayer::SetSource(const std::string &source)
-{
-	FFmpegReader *ffreader = new FFmpegReader(source);
-	ffreader->DisplayInfo();
+    // Return any error string during initialization
+    std::string QtPlayer::GetError() {
+    	if (reader && threads_started) {
+    		// Get error from audio thread (if any)
+    		return p->audioPlayback->getError();
+    	} else {
+    		return "";
+    	}
+    }
 
-	//reader = new FrameMapper(ffreader, ffreader->info.fps, PULLDOWN_NONE, ffreader->info.sample_rate, ffreader->info.channels, ffreader->info.channel_layout);
-	reader = new Timeline(ffreader->info.width, ffreader->info.height, ffreader->info.fps, ffreader->info.sample_rate, ffreader->info.channels, ffreader->info.channel_layout);
-	Clip *c = new Clip(source);
+    /// Get Audio Devices from JUCE
+    std::vector<openshot::AudioDeviceInfo> QtPlayer::GetAudioDeviceNames() {
+    	if (reader && threads_started) {
+    		return p->audioPlayback->getAudioDeviceNames();
+    	} else {
+    		return std::vector<openshot::AudioDeviceInfo>();
+    	}
+    }
 
-	Timeline* tm = (Timeline*)reader;
-	tm->AddClip(c);
-	tm->Open();
+    void QtPlayer::SetSource(const std::string &source)
+    {
+    	FFmpegReader *ffreader = new FFmpegReader(source);
+    	ffreader->DisplayInfo();
 
-//	ZmqLogger::Instance()->Path("/home/jonathan/.openshot_qt/libopenshot.log");
-//	ZmqLogger::Instance()->Enable(true);
+    	// Use default sample rate (or use the FFmpegReader's audio settings if any)
+    	int sample_rate = 44100;
+    	if (ffreader->info.sample_rate > 0)
+    	    sample_rate = ffreader->info.sample_rate;
 
-    // Set the reader
-	Reader(reader);
-}
+        // Use default channels (or use the FFmpegReader's audio settings if any)
+    	int channels = 2;
+    	if (ffreader->info.channels > 0)
+    	    channels = ffreader->info.channels;
 
-void QtPlayer::Play()
-{
-	// Set mode to playing, and speed to normal
-	mode = PLAYBACK_PLAY;
-	Speed(1);
+        // Use default channel layout (or use the FFmpegReader's audio settings if any)
+    	openshot::ChannelLayout channel_layout = openshot::LAYOUT_STEREO;
+    	if (channels != 2)
+            channel_layout = ffreader->info.channel_layout;
 
-	if (reader && !threads_started) {
-		// Start thread only once
-		p->startPlayback();
-		threads_started = true;
-	}
-}
+    	// Create timeline instance (720p, since we have no re-scaling in this player yet)
+    	reader = new Timeline(1280, 720, ffreader->info.fps, sample_rate, channels, channel_layout);
+    	Clip *c = new Clip(source);
 
-void QtPlayer::Loading()
-{
-    mode = PLAYBACK_LOADING;
-}
+    	Timeline* tm = (Timeline*)reader;
+    	tm->AddClip(c);
+    	tm->Open();
 
-/// Get the current mode
-PlaybackMode QtPlayer::Mode()
-{
-	return mode;
-}
+        // Set the reader
+        Reader(reader);
+    }
 
-void QtPlayer::Pause()
-{
-    mode = PLAYBACK_PAUSED;
-    Speed(0);
-}
+    void QtPlayer::Play()
+    {
+        // Set mode to playing, and speed to normal
+    	mode = PLAYBACK_PLAY;
+    	Speed(1);
 
-int QtPlayer::Position()
-{
-    return p->video_position;
-}
+    	if (reader && !threads_started) {
+    		// Start thread only once
+    		p->startPlayback();
+    		threads_started = true;
+    	}
+    }
 
-void QtPlayer::Seek(int64_t new_frame)
-{
-	// Check for seek
-	if (reader && threads_started && new_frame > 0) {
-		// Notify cache thread that seek has occurred
-		p->videoCache->Seek(new_frame);
+    void QtPlayer::Loading()
+    {
+        mode = PLAYBACK_LOADING;
+    }
 
-		// Update current position
-		p->video_position = new_frame;
+    /// Get the current mode
+    openshot::PlaybackMode QtPlayer::Mode()
+    {
+    	return mode;
+    }
 
-		// Clear last position (to force refresh)
-		p->last_video_position = 0;
+    void QtPlayer::Pause()
+    {
+        mode = PLAYBACK_PAUSED;
+        Speed(0);
+    }
 
-		// Notify audio thread that seek has occurred
-		p->audioPlayback->Seek(new_frame);
-	}
-}
+    int64_t QtPlayer::Position()
+    {
+        return p->video_position;
+    }
 
-void QtPlayer::Stop()
-{
-	// Change mode to stopped
-	mode = PLAYBACK_STOPPED;
+    void QtPlayer::Seek(int64_t new_frame)
+    {
+    	// Check for seek
+    	if (reader && threads_started && new_frame > 0) {
+    		// Notify cache thread that seek has occurred
+    		p->videoCache->Seek(new_frame);
 
-	// Notify threads of stopping
-	if (reader && threads_started) {
-		p->videoCache->Stop();
-		p->audioPlayback->Stop();
+    		// Update current position
+    		p->video_position = new_frame;
 
-		// Kill all threads
-		p->stopPlayback();
-	}
+    		// Clear last position (to force refresh)
+    		p->last_video_position = 0;
 
-	p->video_position = 0;
-	threads_started = false;
-}
+    		// Notify audio thread that seek has occurred
+    		p->audioPlayback->Seek(new_frame);
+    	}
+    }
 
-// Set the reader object
-void QtPlayer::Reader(ReaderBase *new_reader)
-{
-	// Set new reader. Note: Be sure to close and dispose of the old reader after calling this
-	reader = new_reader;
-	p->reader = new_reader;
-	p->videoCache->Reader(new_reader);
-	p->audioPlayback->Reader(new_reader);
-}
+    void QtPlayer::Stop()
+    {
+    	// Change mode to stopped
+    	mode = PLAYBACK_STOPPED;
 
-// Get the current reader, such as a FFmpegReader
-ReaderBase* QtPlayer::Reader() {
-	return reader;
-}
+    	// Notify threads of stopping
+    	if (reader && threads_started) {
+    		p->videoCache->Stop();
+    		p->audioPlayback->Stop();
 
-// Set the QWidget pointer to display the video on (as a LONG pointer id)
-void QtPlayer::SetQWidget(int64_t qwidget_address) {
-	// Update override QWidget address on the video renderer
-	p->renderer->OverrideWidget(qwidget_address);
-}
+    		// Kill all threads
+    		p->stopPlayback();
+    	}
 
-// Get the Renderer pointer address (for Python to cast back into a QObject)
-int64_t QtPlayer::GetRendererQObject() {
-	return (int64_t)(VideoRenderer*)p->renderer;
-}
+    	p->video_position = 0;
+    	threads_started = false;
+    }
 
-// Get the Playback speed
-float QtPlayer::Speed() {
-	return speed;
-}
+    // Set the reader object
+    void QtPlayer::Reader(openshot::ReaderBase *new_reader)
+    {
+    	// Set new reader. Note: Be sure to close and dispose of the old reader after calling this
+    	reader = new_reader;
+    	p->reader = new_reader;
+    	p->videoCache->Reader(new_reader);
+    	p->audioPlayback->Reader(new_reader);
+    }
 
-// Set the Playback speed multiplier (1.0 = normal speed, <1.0 = slower, >1.0 faster)
-void QtPlayer::Speed(float new_speed) {
-	speed = new_speed;
-	p->speed = new_speed;
-	p->videoCache->setSpeed(new_speed);
-	if (p->reader->info.has_audio)
-		p->audioPlayback->setSpeed(new_speed);
-}
+    // Get the current reader, such as a FFmpegReader
+    openshot::ReaderBase* QtPlayer::Reader() {
+    	return reader;
+    }
 
-// Get the Volume
-float QtPlayer::Volume() {
-	return volume;
-}
+    // Set the QWidget pointer to display the video on (as a LONG pointer id)
+    void QtPlayer::SetQWidget(int64_t qwidget_address) {
+    	// Update override QWidget address on the video renderer
+    	p->renderer->OverrideWidget(qwidget_address);
+    }
 
-// Set the Volume multiplier (1.0 = normal volume, <1.0 = quieter, >1.0 louder)
-void QtPlayer::Volume(float new_volume) {
-	volume = new_volume;
+    // Get the Renderer pointer address (for Python to cast back into a QObject)
+    int64_t QtPlayer::GetRendererQObject() {
+    	return (int64_t)(VideoRenderer*)p->renderer;
+    }
+
+    // Get the Playback speed
+    float QtPlayer::Speed() {
+    	return speed;
+    }
+
+    // Set the Playback speed multiplier (1.0 = normal speed, <1.0 = slower, >1.0 faster)
+    void QtPlayer::Speed(float new_speed) {
+    	speed = new_speed;
+    	p->speed = new_speed;
+    	p->videoCache->setSpeed(new_speed);
+    	if (p->reader->info.has_audio)
+    		p->audioPlayback->setSpeed(new_speed);
+    }
+
+    // Get the Volume
+    float QtPlayer::Volume() {
+    	return volume;
+    }
+
+    // Set the Volume multiplier (1.0 = normal volume, <1.0 = quieter, >1.0 louder)
+    void QtPlayer::Volume(float new_volume) {
+    	volume = new_volume;
+    }
 }

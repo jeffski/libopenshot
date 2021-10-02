@@ -3,9 +3,12 @@
  * @brief Source file for the FrameMapper class
  * @author Jonathan Thomas <jonathan@openshot.org>
  *
- * @section LICENSE
+ * @ref License
+ */
+
+/* LICENSE
  *
- * Copyright (c) 2008-2014 OpenShot Studios, LLC
+ * Copyright (c) 2008-2019 OpenShot Studios, LLC
  * <http://www.openshotstudios.com/>. This file is part of
  * OpenShot Library (libopenshot), an open-source project dedicated to
  * delivering high quality video editing and animation solutions to the
@@ -25,13 +28,15 @@
  * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../include/FrameMapper.h"
+#include "FrameMapper.h"
+#include "Exceptions.h"
+#include "Clip.h"
 
 using namespace std;
 using namespace openshot;
 
 FrameMapper::FrameMapper(ReaderBase *reader, Fraction target, PulldownType target_pulldown, int target_sample_rate, int target_channels, ChannelLayout target_channel_layout) :
-		reader(reader), target(target), pulldown(target_pulldown), is_dirty(true), avr(NULL)
+		reader(reader), target(target), pulldown(target_pulldown), is_dirty(true), avr(NULL), parent_position(0.0)
 {
 	// Set the original frame rate from the reader
 	original = Fraction(reader->info.fps.num, reader->info.fps.den);
@@ -58,9 +63,11 @@ FrameMapper::FrameMapper(ReaderBase *reader, Fraction target, PulldownType targe
 
 // Destructor
 FrameMapper::~FrameMapper() {
-	if (is_open)
-		// Auto Close if not already
-		Close();
+
+	// Auto Close if not already
+	Close();
+
+	reader = NULL;
 }
 
 /// Get the current reader
@@ -70,7 +77,7 @@ ReaderBase* FrameMapper::Reader()
         return reader;
     else
         // Throw error if reader not initialized
-        throw ReaderClosed("No Reader has been initialized for FrameMapper.  Call Reader(*reader) before calling this method.", "");
+        throw ReaderClosed("No Reader has been initialized for FrameMapper.  Call Reader(*reader) before calling this method.");
 }
 
 void FrameMapper::AddField(int64_t frame)
@@ -94,7 +101,7 @@ void FrameMapper::AddField(Field field)
 // whether the frame rate is increasing or decreasing.
 void FrameMapper::Init()
 {
-	ZmqLogger::Instance()->AppendDebugMethod("FrameMapper::Init (Calculate frame mappings)", "", -1, "", -1, "", -1, "", -1, "", -1, "", -1);
+	ZmqLogger::Instance()->AppendDebugMethod("FrameMapper::Init (Calculate frame mappings)");
 
 	// Do not initialize anything if just a picture with no audio
 	if (info.has_video and !info.has_audio and info.has_single_image)
@@ -104,6 +111,16 @@ void FrameMapper::Init()
 	// Clear the fields & frames lists
 	fields.clear();
 	frames.clear();
+
+	// Find parent position (if any)
+    Clip *parent = (Clip *) ParentClip();
+    if (parent) {
+        parent_position = parent->Position();
+        parent_start = parent->Start();
+    } else {
+        parent_position = 0.0;
+        parent_start = 0.0;
+    }
 
 	// Mark as not dirty
 	is_dirty = false;
@@ -230,7 +247,7 @@ void FrameMapper::Init()
 	int64_t start_samples_frame = 1;
 	int start_samples_position = 0;
 
-	for (int64_t field = 1; field <= fields.size(); field++)
+	for (std::vector<Field>::size_type field = 1; field <= fields.size(); field++)
 	{
 		// Get the current field
 		Field f = fields[field - 1];
@@ -252,11 +269,12 @@ void FrameMapper::Init()
 			// the original sample rate.
 			int64_t end_samples_frame = start_samples_frame;
 			int end_samples_position = start_samples_position;
-			int remaining_samples = Frame::GetSamplesPerFrame(frame_number, target, reader->info.sample_rate, reader->info.channels);
+			int remaining_samples = Frame::GetSamplesPerFrame(AdjustFrameNumber(frame_number), target, reader->info.sample_rate, reader->info.channels);
 
 			while (remaining_samples > 0)
 			{
-				// get original samples
+				// Get original samples (with NO framerate adjustments)
+				// This is the original reader's frame numbers
 				int original_samples = Frame::GetSamplesPerFrame(end_samples_frame, original, reader->info.sample_rate, reader->info.channels) - end_samples_position;
 
 				// Enough samples
@@ -277,12 +295,12 @@ void FrameMapper::Init()
 
 
 			// Create the sample mapping struct
-			SampleRange Samples = {start_samples_frame, start_samples_position, end_samples_frame, end_samples_position, Frame::GetSamplesPerFrame(frame_number, target, reader->info.sample_rate, reader->info.channels)};
+			SampleRange Samples = {start_samples_frame, start_samples_position, end_samples_frame, end_samples_position, Frame::GetSamplesPerFrame(AdjustFrameNumber(frame_number), target, reader->info.sample_rate, reader->info.channels)};
 
 			// Reset the audio variables
 			start_samples_frame = end_samples_frame;
 			start_samples_position = end_samples_position + 1;
-			if (start_samples_position >= Frame::GetSamplesPerFrame(start_samples_frame, original, reader->info.sample_rate, reader->info.channels))
+			if (start_samples_position >= Frame::GetSamplesPerFrame(AdjustFrameNumber(start_samples_frame), original, reader->info.sample_rate, reader->info.channels))
 			{
 				start_samples_frame += 1; // increment the frame (since we need to wrap onto the next one)
 				start_samples_position = 0; // reset to 0, since we wrapped
@@ -332,12 +350,12 @@ MappedFrame FrameMapper::GetMappedFrame(int64_t TargetFrameNumber)
 		// frame too small, return error
 		throw OutOfBoundsFrame("An invalid frame was requested.", TargetFrameNumber, frames.size());
 
-	else if (TargetFrameNumber > frames.size())
+	else if (TargetFrameNumber > (int64_t)frames.size())
 		// frame too large, set to end frame
 		TargetFrameNumber = frames.size();
 
 	// Debug output
-	ZmqLogger::Instance()->AppendDebugMethod("FrameMapper::GetMappedFrame", "TargetFrameNumber", TargetFrameNumber, "frames.size()", frames.size(), "frames[...].Odd", frames[TargetFrameNumber - 1].Odd.Frame, "frames[...].Even", frames[TargetFrameNumber - 1].Even.Frame, "", -1, "", -1);
+	ZmqLogger::Instance()->AppendDebugMethod("FrameMapper::GetMappedFrame", "TargetFrameNumber", TargetFrameNumber, "frames.size()", frames.size(), "frames[...].Odd", frames[TargetFrameNumber - 1].Odd.Frame, "frames[...].Even", frames[TargetFrameNumber - 1].Even.Frame);
 
 	// Return frame
 	return frames[TargetFrameNumber - 1];
@@ -349,11 +367,11 @@ std::shared_ptr<Frame> FrameMapper::GetOrCreateFrame(int64_t number)
 	std::shared_ptr<Frame> new_frame;
 
 	// Init some basic properties about this frame (keep sample rate and # channels the same as the original reader for now)
-	int samples_in_frame = Frame::GetSamplesPerFrame(number, target, reader->info.sample_rate, reader->info.channels);
+	int samples_in_frame = Frame::GetSamplesPerFrame(AdjustFrameNumber(number), target, reader->info.sample_rate, reader->info.channels);
 
 	try {
 		// Debug output
-		ZmqLogger::Instance()->AppendDebugMethod("FrameMapper::GetOrCreateFrame (from reader)", "number", number, "samples_in_frame", samples_in_frame, "", -1, "", -1, "", -1, "", -1);
+		ZmqLogger::Instance()->AppendDebugMethod("FrameMapper::GetOrCreateFrame (from reader)", "number", number, "samples_in_frame", samples_in_frame);
 
 		// Attempt to get a frame (but this could fail if a reader has just been closed)
 		new_frame = reader->GetFrame(number);
@@ -363,14 +381,12 @@ std::shared_ptr<Frame> FrameMapper::GetOrCreateFrame(int64_t number)
 
 	} catch (const ReaderClosed & e) {
 		// ...
-	} catch (const TooManySeeks & e) {
-		// ...
 	} catch (const OutOfBoundsFrame & e) {
 		// ...
 	}
 
 	// Debug output
-	ZmqLogger::Instance()->AppendDebugMethod("FrameMapper::GetOrCreateFrame (create blank)", "number", number, "samples_in_frame", samples_in_frame, "", -1, "", -1, "", -1, "", -1);
+	ZmqLogger::Instance()->AppendDebugMethod("FrameMapper::GetOrCreateFrame (create blank)", "number", number, "samples_in_frame", samples_in_frame);
 
 	// Create blank frame
 	new_frame = std::make_shared<Frame>(number, info.width, info.height, "#000000", samples_in_frame, reader->info.channels);
@@ -390,9 +406,20 @@ std::shared_ptr<Frame> FrameMapper::GetFrame(int64_t requested_frame)
 	// Create a scoped lock, allowing only a single thread to run the following code at one time
 	const GenericScopedLock<CriticalSection> lock(getFrameCriticalSection);
 
-	// Check if mappings are dirty (and need to be recalculated)
+    // Find parent properties (if any)
+    Clip *parent = (Clip *) ParentClip();
+    if (parent) {
+        float position = parent->Position();
+        float start = parent->Start();
+        if (parent_position != position || parent_start != start) {
+            // Force dirty if parent clip has moved or been trimmed
+            // since this heavily affects frame #s and audio mappings
+            is_dirty = true;
+        }
+    }
+
+    // Check if mappings are dirty (and need to be recalculated)
 	if (is_dirty)
-		// Recalculate mappings
 		Init();
 
 	// Check final cache a 2nd time (due to potential lock already generating this frame)
@@ -404,14 +431,14 @@ std::shared_ptr<Frame> FrameMapper::GetFrame(int64_t requested_frame)
 	int minimum_frames = 1;
 
 	// Debug output
-	ZmqLogger::Instance()->AppendDebugMethod("FrameMapper::GetFrame (Loop through frames)", "requested_frame", requested_frame, "minimum_frames", minimum_frames, "", -1, "", -1, "", -1, "", -1);
+	ZmqLogger::Instance()->AppendDebugMethod("FrameMapper::GetFrame (Loop through frames)", "requested_frame", requested_frame, "minimum_frames", minimum_frames);
 
 	// Loop through all requested frames
 	for (int64_t frame_number = requested_frame; frame_number < requested_frame + minimum_frames; frame_number++)
 	{
 
 		// Debug output
-		ZmqLogger::Instance()->AppendDebugMethod("FrameMapper::GetFrame (inside omp for loop)", "frame_number", frame_number, "minimum_frames", minimum_frames, "requested_frame", requested_frame, "", -1, "", -1, "", -1);
+		ZmqLogger::Instance()->AppendDebugMethod("FrameMapper::GetFrame (inside omp for loop)", "frame_number", frame_number, "minimum_frames", minimum_frames, "requested_frame", requested_frame);
 
 		// Get the mapped frame
 		MappedFrame mapped = GetMappedFrame(frame_number);
@@ -422,7 +449,7 @@ std::shared_ptr<Frame> FrameMapper::GetFrame(int64_t requested_frame)
 
 		// Get # of channels in the actual frame
 		int channels_in_frame = mapped_frame->GetAudioChannelsCount();
-		int samples_in_frame = Frame::GetSamplesPerFrame(frame_number, target, mapped_frame->SampleRate(), channels_in_frame);
+		int samples_in_frame = Frame::GetSamplesPerFrame(AdjustFrameNumber(frame_number), target, mapped_frame->SampleRate(), channels_in_frame);
 
 		// Determine if mapped frame is identical to source frame
 		// including audio sample distribution according to mapped.Samples,
@@ -445,7 +472,8 @@ std::shared_ptr<Frame> FrameMapper::GetFrame(int64_t requested_frame)
 		}
 
 		// Create a new frame
-		std::shared_ptr<Frame> frame = std::make_shared<Frame>(frame_number, 1, 1, "#000000", samples_in_frame, channels_in_frame);
+		auto frame = std::make_shared<Frame>(
+			frame_number, 1, 1, "#000000", samples_in_frame, channels_in_frame);
 		frame->SampleRate(mapped_frame->SampleRate());
 		frame->ChannelsLayout(mapped_frame->ChannelsLayout());
 
@@ -455,13 +483,14 @@ std::shared_ptr<Frame> FrameMapper::GetFrame(int64_t requested_frame)
 		odd_frame = GetOrCreateFrame(mapped.Odd.Frame);
 
 		if (odd_frame)
-			frame->AddImage(std::shared_ptr<QImage>(new QImage(*odd_frame->GetImage())), true);
+			frame->AddImage(std::make_shared<QImage>(*odd_frame->GetImage()), true);
 		if (mapped.Odd.Frame != mapped.Even.Frame) {
 			// Add even lines (if different than the previous image)
 			std::shared_ptr<Frame> even_frame;
 			even_frame = GetOrCreateFrame(mapped.Even.Frame);
 			if (even_frame)
-				frame->AddImage(std::shared_ptr<QImage>(new QImage(*even_frame->GetImage())), false);
+				frame->AddImage(
+					std::make_shared<QImage>(*even_frame->GetImage()), false);
 		}
 
 		// Resample audio on frame (if needed)
@@ -482,7 +511,7 @@ std::shared_ptr<Frame> FrameMapper::GetFrame(int64_t requested_frame)
 			// includes some additional input samples on first iteration,
 			// and continues the offset to ensure that the sample rate
 			// converter isn't input limited.
-			const int EXTRA_INPUT_SAMPLES = 20;
+			const int EXTRA_INPUT_SAMPLES = 100;
 
 			// Extend end sample count by an additional EXTRA_INPUT_SAMPLES samples
 			copy_samples.sample_end += EXTRA_INPUT_SAMPLES;
@@ -589,21 +618,6 @@ void FrameMapper::PrintMapping()
 		// Recalculate mappings
 		Init();
 
-	// Get the difference (in frames) between the original and target frame rates
-	float difference = target.ToInt() - original.ToInt();
-
-	int field_interval = 0;
-	int frame_interval = 0;
-
-	if (difference != 0)
-	{
-		// Find the number (i.e. interval) of fields that need to be skipped or repeated
-		field_interval = round(fabs(original.ToInt() / difference));
-
-		// Get frame interval (2 fields per frame)
-		frame_interval = field_interval * 2.0f;
-	}
-
 	// Loop through frame mappings
 	for (float map = 1; map <= frames.size(); map++)
 	{
@@ -614,7 +628,6 @@ void FrameMapper::PrintMapping()
 
 }
 
-
 // Determine if reader is open or closed
 bool FrameMapper::IsOpen() {
 	if (reader)
@@ -623,13 +636,12 @@ bool FrameMapper::IsOpen() {
 		return false;
 }
 
-
 // Open the internal reader
 void FrameMapper::Open()
 {
 	if (reader)
 	{
-		ZmqLogger::Instance()->AppendDebugMethod("FrameMapper::Open", "", -1, "", -1, "", -1, "", -1, "", -1, "", -1);
+		ZmqLogger::Instance()->AppendDebugMethod("FrameMapper::Open");
 
 		// Open the reader
 		reader->Open();
@@ -644,10 +656,20 @@ void FrameMapper::Close()
 		// Create a scoped lock, allowing only a single thread to run the following code at one time
 		const GenericScopedLock<CriticalSection> lock(getFrameCriticalSection);
 
-		ZmqLogger::Instance()->AppendDebugMethod("FrameMapper::Close", "", -1, "", -1, "", -1, "", -1, "", -1, "", -1);
+		ZmqLogger::Instance()->AppendDebugMethod("FrameMapper::Close");
 
 		// Close internal reader
 		reader->Close();
+
+		// Clear the fields & frames lists
+		fields.clear();
+		frames.clear();
+
+		// Mark as dirty
+		is_dirty = true;
+
+		// Clear cache
+		final_cache.Clear();
 
 		// Deallocate resample buffer
 		if (avr) {
@@ -660,14 +682,14 @@ void FrameMapper::Close()
 
 
 // Generate JSON string of this object
-string FrameMapper::Json() {
+std::string FrameMapper::Json() const {
 
 	// Return formatted string
 	return JsonValue().toStyledString();
 }
 
-// Generate Json::JsonValue for this object
-Json::Value FrameMapper::JsonValue() {
+// Generate Json::Value for this object
+Json::Value FrameMapper::JsonValue() const {
 
 	// Create root json object
 	Json::Value root = ReaderBase::JsonValue(); // get parent properties
@@ -678,30 +700,24 @@ Json::Value FrameMapper::JsonValue() {
 }
 
 // Load JSON string into this object
-void FrameMapper::SetJson(string value) {
+void FrameMapper::SetJson(const std::string value) {
 
 	// Parse JSON string into JSON objects
-	Json::Value root;
-	Json::Reader reader;
-	bool success = reader.parse( value, root );
-	if (!success)
-		// Raise exception
-		throw InvalidJSON("JSON could not be parsed (or is invalid)", "");
-
 	try
 	{
+		const Json::Value root = openshot::stringToJson(value);
 		// Set all values that match
 		SetJsonValue(root);
 	}
-	catch (exception e)
+	catch (const std::exception& e)
 	{
 		// Error parsing JSON (or missing keys)
-		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)", "");
+		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)");
 	}
 }
 
-// Load Json::JsonValue into this object
-void FrameMapper::SetJsonValue(Json::Value root) {
+// Load Json::Value into this object
+void FrameMapper::SetJsonValue(const Json::Value root) {
 
 	// Set parent data
 	ReaderBase::SetJsonValue(root);
@@ -763,7 +779,7 @@ void FrameMapper::ResampleMappedAudio(std::shared_ptr<Frame> frame, int64_t orig
 	int samples_in_frame = frame->GetAudioSamplesCount();
 	ChannelLayout channel_layout_in_frame = frame->ChannelsLayout();
 
-	ZmqLogger::Instance()->AppendDebugMethod("FrameMapper::ResampleMappedAudio", "frame->number", frame->number, "original_frame_number", original_frame_number, "channels_in_frame", channels_in_frame, "samples_in_frame", samples_in_frame, "sample_rate_in_frame", sample_rate_in_frame, "", -1);
+	ZmqLogger::Instance()->AppendDebugMethod("FrameMapper::ResampleMappedAudio", "frame->number", frame->number, "original_frame_number", original_frame_number, "channels_in_frame", channels_in_frame, "samples_in_frame", samples_in_frame, "sample_rate_in_frame", sample_rate_in_frame);
 
 	// Get audio sample array
 	float* frame_samples_float = NULL;
@@ -776,10 +792,23 @@ void FrameMapper::ResampleMappedAudio(std::shared_ptr<Frame> frame, int64_t orig
 	// Create a new array (to hold all S16 audio samples for the current queued frames)
  	int16_t* frame_samples = (int16_t*) av_malloc(sizeof(int16_t)*total_frame_samples);
 
-	// Translate audio sample values back to 16 bit integers
-	for (int s = 0; s < total_frame_samples; s++)
-		// Translate sample value and copy into buffer
-		frame_samples[s] = int(frame_samples_float[s] * (1 << 15));
+	// Translate audio sample values back to 16 bit integers with saturation
+	float valF;
+	int16_t conv;
+	const int16_t max16 = 32767;
+	const int16_t min16 = -32768;
+	for (int s = 0; s < total_frame_samples; s++) {
+		valF = frame_samples_float[s] * (1 << 15);
+		if (valF > max16)
+			conv = max16;
+		else if (valF < min16)
+			conv = min16;
+		else
+			conv = int(valF + 32768.5) - 32768; // +0.5 is for rounding
+
+		// Copy into buffer
+		frame_samples[s] = conv;
+	}
 
 
 	// Deallocate float array
@@ -799,12 +828,14 @@ void FrameMapper::ResampleMappedAudio(std::shared_ptr<Frame> frame, int64_t orig
 
 	if (error_code < 0)
 	{
-		ZmqLogger::Instance()->AppendDebugMethod("FrameMapper::ResampleMappedAudio ERROR [" + (string)av_err2str(error_code) + "]", "error_code", error_code, "", -1, "", -1, "", -1, "", -1, "", -1);
+		ZmqLogger::Instance()->AppendDebugMethod(
+			"FrameMapper::ResampleMappedAudio ERROR [" + av_err2string(error_code) + "]",
+			"error_code", error_code);
 		throw ErrorEncodingVideo("Error while resampling audio in frame mapper", frame->number);
 	}
 
 	// Update total samples & input frame size (due to bigger or smaller data types)
-	total_frame_samples = Frame::GetSamplesPerFrame(frame->number, target, info.sample_rate, info.channels);
+	total_frame_samples = Frame::GetSamplesPerFrame(AdjustFrameNumber(frame->number), target, info.sample_rate, info.channels);
 
 	ZmqLogger::Instance()->AppendDebugMethod("FrameMapper::ResampleMappedAudio (adjust # of samples)", "total_frame_samples", total_frame_samples, "info.sample_rate", info.sample_rate, "sample_rate_in_frame", sample_rate_in_frame, "info.channels", info.channels, "channels_in_frame", channels_in_frame, "original_frame_number", original_frame_number);
 
@@ -898,7 +929,7 @@ void FrameMapper::ResampleMappedAudio(std::shared_ptr<Frame> frame, int64_t orig
 		// Add samples to frame for this channel
 		frame->AddAudio(true, channel_filter, 0, channel_buffer, position, 1.0f);
 
-		ZmqLogger::Instance()->AppendDebugMethod("FrameMapper::ResampleMappedAudio (Add audio to channel)", "number of samples", position, "channel_filter", channel_filter, "", -1, "", -1, "", -1, "", -1);
+		ZmqLogger::Instance()->AppendDebugMethod("FrameMapper::ResampleMappedAudio (Add audio to channel)", "number of samples", position, "channel_filter", channel_filter);
 	}
 
 	// Update frame's audio meta data
@@ -912,4 +943,26 @@ void FrameMapper::ResampleMappedAudio(std::shared_ptr<Frame> frame, int64_t orig
 	// Delete arrays
 	delete[] resampled_samples;
 	resampled_samples = NULL;
+}
+
+// Adjust frame number for Clip position and start (which can result in a different number)
+int64_t FrameMapper::AdjustFrameNumber(int64_t clip_frame_number) {
+
+	// Get clip position from parent clip (if any)
+	float position = 0.0;
+	float start = 0.0;
+	Clip *parent = (Clip *) ParentClip();
+	if (parent) {
+		position = parent->Position();
+		start = parent->Start();
+	}
+
+	// Adjust start frame and position based on parent clip. This prevents ensures the same
+	// frame # is used by mapped readers and clips, when calculating samples per frame. Thus,
+	// this prevents gaps and mismatches in # of samples.
+	int64_t clip_start_frame = (start * info.fps.ToDouble()) + 1;
+	int64_t clip_start_position = round(position * info.fps.ToDouble()) + 1;
+	int64_t frame_number = clip_frame_number + clip_start_position - clip_start_frame;
+
+	return frame_number;
 }
