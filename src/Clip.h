@@ -139,6 +139,9 @@ namespace openshot {
 		/// (reader member variable itself may have been replaced)
 		openshot::ReaderBase* allocated_reader;
 
+		/// The type of reader passed to the clip
+		std::string reader_type;
+
 		/// Adjust frame number minimum value
 		int64_t adjust_frame_number_minimum(int64_t frame_number);
 
@@ -168,6 +171,10 @@ namespace openshot {
 
 		/// Reverse an audio buffer
 		void reverse_buffer(juce::AudioSampleBuffer* buffer);
+
+		/// When scale mode is SCALE_NONE, we don't need to scale QtImageReader/FFmpegReader again
+		/// because those readers already scaled before.
+		bool shouldScale() const;
 
 
 	public:
