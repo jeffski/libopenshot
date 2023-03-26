@@ -6,85 +6,63 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <QFileDialog>
 #include "Clip.h"
 #include "Frame.h"
 #include "FFmpegReader.h"
 #include "Timeline.h"
+#include "Profiles.h"
 
 using namespace openshot;
 
 
 int main(int argc, char* argv[]) {
-
-    // Types for storing time durations in whole and fractional milliseconds
-    using ms = std::chrono::milliseconds;
-    using s = std::chrono::seconds;
-    using double_ms = std::chrono::duration<double, ms::period>;
-
-    // FFmpeg Reader performance test
-    const auto total_1 = std::chrono::high_resolution_clock::now();
-    FFmpegReader r9("/home/jonathan/Videos/sintel_trailer-1080p.mp4");
-    r9.Open();
-    for (long int frame = 1; frame <= 1000; frame++)
-    {
-        const auto time1 = std::chrono::high_resolution_clock::now();
-        std::shared_ptr<Frame> f = r9.GetFrame(frame);
-        const auto time2 = std::chrono::high_resolution_clock::now();
-        std::cout << "FFmpegReader: " << frame
-                  << " (" << double_ms(time2 - time1).count() << " ms)\n";
+    QString filename = "/home/jonathan/test-crash.osp";
+    //QString filename = "/home/jonathan/Downloads/drive-download-20221123T185423Z-001/project-3363/project-3363.osp";
+    //QString filename = "/home/jonathan/Downloads/drive-download-20221123T185423Z-001/project-3372/project-3372.osp";
+    //QString filename = "/home/jonathan/Downloads/drive-download-20221123T185423Z-001/project-3512/project-3512.osp";
+    QString project_json = "";
+    QFile file(filename);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        std::cout << "File error!" << std::endl;
+        exit(1);
+    } else {
+        while (!file.atEnd()) {
+            QByteArray line = file.readLine();
+            project_json += line;
+        }
     }
-    const auto total_2 = std::chrono::high_resolution_clock::now();
-    auto total_sec = std::chrono::duration_cast<ms>(total_2 - total_1);
-    std::cout << "FFmpegReader TOTAL: " << total_sec.count() << " ms\n";
-    r9.Close();
 
+    // Open timeline reader
+    std::cout << "Project JSON length: " << project_json.length() << std::endl;
+    Timeline r(1280, 720, openshot::Fraction(30, 1), 44100, 2, openshot::LAYOUT_STEREO);
+    r.SetJson(project_json.toStdString());
+    r.DisplayInfo();
+    r.Open();
 
-    // Timeline Reader performance test
-    Timeline tm(r9.info);
-    Clip *c = new Clip(&r9);
-    tm.AddClip(c);
-    tm.Open();
+    // Get max frame
+    int64_t max_frame = r.GetMaxFrame();
+    std::cout << "max_frame: " << max_frame << ", r.info.video_length: " << r.info.video_length << std::endl;
 
-    const auto total_3 = std::chrono::high_resolution_clock::now();
-    for (long int frame = 1; frame <= 1000; frame++)
+    for (long int frame = 1; frame <= max_frame; frame++)
     {
-        const auto time1 = std::chrono::high_resolution_clock::now();
-        std::shared_ptr<Frame> f = tm.GetFrame(frame);
-        const auto time2 = std::chrono::high_resolution_clock::now();
-        std::cout << "Timeline: " << frame
-                  << " (" << double_ms(time2 - time1).count() << " ms)\n";
+        float percent = (float(frame) / max_frame) * 100.0;
+        std::cout << "Requesting Frame #: " << frame << " (" << percent << "%)" << std::endl;
+        std::shared_ptr<Frame> f = r.GetFrame(frame);
+
+        // Preview frame image
+        if (frame % 1 == 0) {
+            f->Save("preview.jpg", 1.0, "jpg", 100);
+        }
     }
-    const auto total_4 = std::chrono::high_resolution_clock::now();
-    total_sec = std::chrono::duration_cast<ms>(total_4 - total_3);
-    std::cout << "Timeline TOTAL: " << total_sec.count() << " ms\n";
-    tm.Close();
+    r.Close();
 
-    std::cout << "Completed successfully!\n";
-
-    return 0;
+    exit(0);
 }

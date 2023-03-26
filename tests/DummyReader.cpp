@@ -6,31 +6,13 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include <memory>
 
-#include <catch2/catch.hpp>
+#include "openshot_catch.h"
 
 #include "DummyReader.h"
 #include "Exceptions.h"
@@ -39,7 +21,6 @@
 #include "Frame.h"
 
 TEST_CASE( "Default constructor", "[libopenshot][dummyreader]" ) {
-	// Create a default fraction (should be 1/1)
 	openshot::DummyReader r;
 	r.Open(); // Open the reader
 
@@ -59,7 +40,6 @@ TEST_CASE( "Default constructor", "[libopenshot][dummyreader]" ) {
 }
 
 TEST_CASE( "Constructor", "[libopenshot][dummyreader]" ) {
-	// Create a default fraction (should be 1/1)
 	openshot::DummyReader r(openshot::Fraction(30, 1), 1920, 1080, 44100, 2, 60.0);
 	r.Open(); // Open the reader
 
@@ -74,7 +54,6 @@ TEST_CASE( "Constructor", "[libopenshot][dummyreader]" ) {
 }
 
 TEST_CASE( "Blank_Frame", "[libopenshot][dummyreader]" ) {
-	// Create a default fraction (should be 1/1)
 	openshot::DummyReader r(openshot::Fraction(30, 1), 1920, 1080, 44100, 2, 30.0);
 	r.Open(); // Open the reader
 
@@ -114,7 +93,7 @@ TEST_CASE( "Fake_Frame", "[libopenshot][dummyreader]" ) {
 		delete[] audio_buffer;
 	}
 
-	// Create a default fraction (should be 1/1)
+	// Create a dummy reader, with a pre-existing cache
 	openshot::DummyReader r(openshot::Fraction(30, 1), 1920, 1080, 44100, 2, 30.0, &cache);
 	r.Open(); // Open the reader
 
@@ -126,30 +105,6 @@ TEST_CASE( "Fake_Frame", "[libopenshot][dummyreader]" ) {
 	CHECK(r.GetFrame(2)->GetAudioSamples(0)[0] == 2);
 	CHECK(r.GetFrame(2)->GetAudioSamples(0)[1] == Approx(2.00068033).margin(0.00001));
 	CHECK(r.GetFrame(2)->GetAudioSamples(0)[2] == Approx(2.00136054).margin(0.00001));
-
-	// Clean up
-	cache.Clear();
-	r.Close();
-}
-
-TEST_CASE( "Invalid_Fake_Frame", "[libopenshot][dummyreader]" ) {
-	// Create fake frames (with specific frame #, samples, and channels)
-	auto f1 = std::make_shared<openshot::Frame>(1, 1470, 2);
-	auto f2 = std::make_shared<openshot::Frame>(2, 1470, 2);
-
-	// Add test frames to cache object
-	openshot::CacheMemory cache;
-	cache.Add(f1);
-	cache.Add(f2);
-
-	// Create a default fraction (should be 1/1)
-	openshot::DummyReader r(openshot::Fraction(30, 1), 1920, 1080, 44100, 2, 30.0, &cache);
-	r.Open();
-
-	// Verify exception
-	CHECK(r.GetFrame(1)->number == 1);
-	CHECK(r.GetFrame(2)->number == 2);
-	CHECK_THROWS_AS(r.GetFrame(3)->number, openshot::InvalidFile);
 
 	// Clean up
 	cache.Clear();

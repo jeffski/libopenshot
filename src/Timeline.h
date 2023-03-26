@@ -6,27 +6,9 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_TIMELINE_H
 #define OPENSHOT_TIMELINE_H
@@ -108,10 +90,10 @@ namespace openshot {
 	 * The <b>following graphic</b> displays a timeline, and how clips can be arranged, scaled, and layered together. It
 	 * also demonstrates how the viewport can be scaled smaller than the canvas, which can be used to zoom and pan around the
 	 * canvas (i.e. pan & scan).
-	 * \image html /doc/images/Timeline_Layers.png
+	 * \image html Timeline_Layers.png
 	 *
 	 * The <b>following graphic</b> displays how the playhead determines which frames to combine and layer.
-	 * \image html /doc/images/Playhead.png
+	 * \image html Playhead.png
 	 *
 	 * Lets take a look at what the code looks like:
 	 * @code
@@ -172,16 +154,18 @@ namespace openshot {
 		std::list<openshot::Clip*> clips; ///<List of clips on this timeline
 		std::list<openshot::Clip*> closing_clips; ///<List of clips that need to be closed
 		std::map<openshot::Clip*, openshot::Clip*> open_clips; ///<List of 'opened' clips on this timeline
+		std::set<openshot::Clip*> allocated_clips; ///<List of clips that were allocated by this timeline
 		std::list<openshot::EffectBase*> effects; ///<List of clips on this timeline
+		std::set<openshot::EffectBase*> allocated_effects; ///<List of effects that were allocated by this timeline
 		openshot::CacheBase *final_cache; ///<Final cache of timeline frames
 		std::set<openshot::FrameMapper*> allocated_frame_mappers; ///< all the frame mappers we allocated and must free
 		bool managed_cache; ///< Does this timeline instance manage the cache object
 		std::string path; ///< Optional path of loaded UTF-8 OpenShot JSON project file
-		std::mutex get_frame_mutex; ///< Mutex to protect GetFrame method from different threads calling it
 		int max_concurrent_frames; ///< Max concurrent frames to process at one time
+		double max_time; ///> The max duration (in seconds) of the timeline, based on all the clips
 
 		std::map<std::string, std::shared_ptr<openshot::TrackedObjectBase>> tracked_objects; ///< map of TrackedObjectBBoxes and their IDs
-		
+
 		/// Process a new layer of video or audio
 		void add_layer(std::shared_ptr<openshot::Frame> new_frame, openshot::Clip* source_clip, int64_t clip_frame_number, bool is_top_clip, float max_volume);
 
@@ -193,6 +177,9 @@ namespace openshot {
 		void apply_json_to_effects(Json::Value change); ///< Apply JSON diff to effects
 		void apply_json_to_effects(Json::Value change, openshot::EffectBase* existing_effect); ///<Apply JSON diff to a specific effect
 		void apply_json_to_timeline(Json::Value change); ///<Apply JSON diff to timeline properties
+
+		/// Calculate the max duration (in seconds) of the timeline, based on all the clips, and cache the value
+		void calculate_max_duration();
 
 		/// Calculate time of a frame number, based on a framerate
 		double calculate_time(int64_t number, openshot::Fraction rate);
@@ -246,7 +233,7 @@ namespace openshot {
 
         virtual ~Timeline();
 
-		/// Add to the tracked_objects map a pointer to a tracked object (TrackedObjectBBox) 
+		/// Add to the tracked_objects map a pointer to a tracked object (TrackedObjectBBox)
 		void AddTrackedObject(std::shared_ptr<openshot::TrackedObjectBase> trackedObject);
 		/// Return tracked object pointer by it's id
 		std::shared_ptr<openshot::TrackedObjectBase> GetTrackedObject(std::string id) const;
@@ -277,11 +264,15 @@ namespace openshot {
 		/// @brief Automatically map all clips to the timeline's framerate and samplerate
 		void AutoMapClips(bool auto_map) { auto_map_clips = auto_map; };
 
-        /// Clear all cache for this timeline instance, and all clips, mappers, and readers under it
-        void ClearAllCache();
+		/// Clear all clips, effects, and frame mappers from timeline (and free memory)
+		void Clear();
+        
+		/// Clear all cache for this timeline instance, including all clips' cache
+		/// @param deep If True, clear all FrameMappers and nested Readers (QtImageReader, FFmpegReader, etc...)
+		void ClearAllCache(bool deep=false);
 
 		/// Return a list of clips on the timeline
-		std::list<openshot::Clip*> Clips() { return clips; };
+		std::list<openshot::Clip*> Clips() override { return clips; };
 
 		/// Look up a single clip by ID
 		openshot::Clip* GetClip(const std::string& id);
@@ -359,6 +350,10 @@ namespace openshot {
 		/// @brief Remove an effect from the timeline
 		/// @param effect Remove an effect from the timeline.
 		void RemoveEffect(openshot::EffectBase* effect);
+
+		/// @brief Sort all clips and effects on timeline - which affects the internal order of clips and effects arrays
+		/// This is called automatically when Clips or Effects modify the Layer(), Position(), Start(), or End().
+		void SortTimeline() { sort_clips(); sort_effects(); }
 	};
 
 }

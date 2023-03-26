@@ -1,31 +1,15 @@
-/* ####################### src/openshot.i (libopenshot) ########################
-# @brief SWIG configuration for libopenshot (to generate Python SWIG bindings)
-# @author Jonathan Thomas <jonathan@openshot.org>
-#
-# @section LICENSE
-#
-# Copyright (c) 2008-2019 OpenShot Studios, LLC
-# <http://www.openshotstudios.com/>. This file is part of
-# OpenShot Library (libopenshot), an open-source project dedicated to
-# delivering high quality video editing and animation solutions to the
-# world. For more information visit <http://www.openshot.org/>.
-#
-# OpenShot Library (libopenshot) is free software: you can redistribute it
-# and/or modify it under the terms of the GNU Lesser General Public License
-# as published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# OpenShot Library (libopenshot) is distributed in the hope that it will be
-# useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU Lesser General Public License for more details.
-#
-# You should have received a copy of the GNU Lesser General Public License
-# along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
-################################################################################ */
+/**
+ * @file
+ * @brief SWIG configuration for libopenshot (to generate Python SWIG bindings)
+ * @author Jonathan Thomas <jonathan@openshot.org>
+ *
+ * @section LICENSE
+*/
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
-
-%module openshot
+%module("threads"=1) openshot
 
 /* Suppress warnings about ignored operator= */
 %warnfilter(362);
@@ -52,15 +36,28 @@
 
 /* Mark these classes as shared_ptr classes */
 #ifdef USE_IMAGEMAGICK
-	%shared_ptr(Magick::Image)
+    %shared_ptr(Magick::Image)
 #endif
-%shared_ptr(juce::AudioSampleBuffer)
+%shared_ptr(juce::AudioBuffer<float>)
 %shared_ptr(openshot::Frame)
+
+/* Instantiate the required template specializations */
+%template() std::map<std::string, int>;
+%template() std::pair<int, int>;
+%template() std::vector<int>;
+%template() std::vector<float>;
+%template() std::pair<double, double>;
+%template() std::pair<float, float>;
+%template() std::pair<std::string, std::string>;
+%template() std::vector<std::pair<std::string, std::string>>;
+%template() std::vector<std::vector<float>>;
 
 %{
 #include "OpenShotVersion.h"
 #include "ReaderBase.h"
 #include "WriterBase.h"
+#include "AudioDevices.h"
+#include "AudioWaveformer.h"
 #include "CacheBase.h"
 #include "CacheDisk.h"
 #include "CacheMemory.h"
@@ -95,53 +92,43 @@
 #include "TimelineBase.h"
 #include "Timeline.h"
 #include "ZmqLogger.h"
-#include "AudioDeviceInfo.h"
 
 %}
 
-#ifdef USE_BLACKMAGIC
-	%{
-		#include "DecklinkReader.h"
-		#include "DecklinkWriter.h"
-	%}
-#endif
-
 #ifdef USE_IMAGEMAGICK
-	%{
-		#include "ImageReader.h"
-		#include "ImageWriter.h"
-		#include "TextReader.h"
-	%}
+    %{
+        #include "ImageReader.h"
+        #include "ImageWriter.h"
+        #include "TextReader.h"
+    %}
 #endif
 
 #ifdef USE_OPENCV
-	%{
-		#include "ClipProcessingJobs.h"
-		#include "effects/Stabilizer.h"
-		#include "effects/Tracker.h"
-		#include "effects/ObjectDetection.h"
-		#include "TrackedObjectBase.h"
-		#include "TrackedObjectBBox.h"
-	%}
+    %{
+        #include "ClipProcessingJobs.h"
+        #include "effects/Stabilizer.h"
+        #include "effects/Tracker.h"
+        #include "effects/ObjectDetection.h"
+        #include "TrackedObjectBase.h"
+        #include "TrackedObjectBBox.h"
+    %}
 #endif
 
 /* Generic language independent exception handler. */
 %include "exception.i"
 %exception {
-	try {
-		$action
-	}
-	catch (std::exception &e) {
-		SWIG_exception_fail(SWIG_RuntimeError, e.what());
-	}
+    try {
+        $action
+    }
+    catch (openshot::ExceptionBase &e) {
+        SWIG_exception_fail(SWIG_RuntimeError, e.py_message().c_str());
+    }
+    catch (std::exception &e) {
+        SWIG_exception_fail(SWIG_RuntimeError, e.what());
+    }
 }
 
-/* Instantiate the required template specializations */
-%template() std::map<std::string, int>;
-%template() std::pair<int, int>;
-%template() std::vector<int>;
-%template() std::pair<double, double>;
-%template() std::pair<float, float>;
+
 
 /* Wrap std templates (list, vector, etc...) */
 %template(ClipList) std::list<openshot::Clip *>;
@@ -151,106 +138,135 @@
 %template(FieldVector) std::vector<openshot::Field>;
 %template(MappedFrameVector) std::vector<openshot::MappedFrame>;
 %template(MetadataMap) std::map<std::string, std::string>;
+
+/* Deprecated */
 %template(AudioDeviceInfoVector) std::vector<openshot::AudioDeviceInfo>;
 
 /* Make openshot.Fraction more Pythonic */
 %extend openshot::Fraction {
 %{
-	#include <sstream>
-	#include <map>
-	#include <vector>
+    #include <sstream>
+    #include <map>
+    #include <vector>
 
-	static std::vector<std::string> _keys{"num", "den"};
-	static int fracError = 0;
+    static std::vector<std::string> _keys{"num", "den"};
+    static int fracError = 0;
 %}
-	double __float__() {
-		return $self->ToDouble();
-	}
-	int __int__() {
-		return $self->ToInt();
-	}
-	/* Dictionary-type methods */
-	int __len__() {
-		return _keys.size();
-	}
-	%exception __getitem__ {
-		$action
-		if (fracError == 1) {
-			fracError = 0;  // Clear flag for reuse
-			PyErr_SetString(PyExc_KeyError, "Key not found");
-			SWIG_fail;
-		}
-	}
-	const std::string __getitem__(int index) {
-		if (index < static_cast<int>(_keys.size())) {
-			return _keys[index];
-		}
-		/* Otherwise, raise an exception */
-		fracError = 1;
-		return "";
-	}
-	int __getitem__(const std::string& key) {
-		if (key == "num") {
-			return $self->num;
-		} else if (key == "den") {
-			return $self->den;
-		}
-		/* Otherwise, raise an exception */
-		fracError = 1;
-		return 0;
-	}
-	bool __contains__(const std::string& key) {
-		return bool(std::find(_keys.begin(), _keys.end(), key) != _keys.end());
-	}
-	std::map<std::string, int> GetMap() {
-		std::map<std::string, int> map1;
-		map1.insert({"num", $self->num});
-		map1.insert({"den", $self->den});
-		return map1;
-	}
-	/* Display methods */
-	const std::string __str__() {
-		std::ostringstream result;
-		result << $self->num << ":" << $self->den;
-		return result.str();
-	}
-	const std::string __repr__() {
-		std::ostringstream result;
-		result << "Fraction(" << $self->num << ", " << $self->den << ")";
-		return result.str();
-  }
-	/* Implement dict methods in Python */
-	%pythoncode %{
-		def __iter__(self):
-			return iter(self.GetMap())
-		def keys(self):
-			_items = self.GetMap()
-			return _items.keys()
-		def items(self):
-			_items = self.GetMap()
-			return _items.items()
-		def values(self):
-			_items = self.GetMap()
-			return _items.values()
-	%}
+    double __float__() {
+        return $self->ToDouble();
+    }
+    int __int__() {
+        return $self->ToInt();
+    }
+    /* Dictionary-type methods */
+    int __len__() {
+        return _keys.size();
+    }
+    %exception __getitem__ {
+        $action
+        if (fracError == 1) {
+            fracError = 0;  // Clear flag for reuse
+            PyErr_SetString(PyExc_KeyError, "Key not found");
+            SWIG_fail;
+        }
+    }
+    const std::string __getitem__(int index) {
+        if (index < static_cast<int>(_keys.size())) {
+            return _keys[index];
+        }
+        /* Otherwise, raise an exception */
+        fracError = 1;
+        return "";
+    }
+    int __getitem__(const std::string& key) {
+        if (key == "num") {
+            return $self->num;
+        } else if (key == "den") {
+            return $self->den;
+        }
+        /* Otherwise, raise an exception */
+        fracError = 1;
+        return 0;
+    }
+    bool __contains__(const std::string& key) {
+        return bool(std::find(_keys.begin(), _keys.end(), key) != _keys.end());
+    }
+    std::map<std::string, int> GetMap() {
+        std::map<std::string, int> map1;
+        map1.insert({"num", $self->num});
+        map1.insert({"den", $self->den});
+        return map1;
+    }
+    /* Display methods */
+    const std::string __str__() {
+        std::ostringstream result;
+        result << $self->num << ":" << $self->den;
+        return result.str();
+    }
+    const std::string __repr__() {
+        std::ostringstream result;
+        result << "Fraction(" << $self->num << ", " << $self->den << ")";
+        return result.str();
+    }
+    /* Implement dict methods in Python */
+    %pythoncode %{
+        def __iter__(self):
+            return iter(self.GetMap())
+        def keys(self):
+            _items = self.GetMap()
+            return _items.keys()
+        def items(self):
+            _items = self.GetMap()
+            return _items.items()
+        def values(self):
+            _items = self.GetMap()
+            return _items.values()
+        def __mul__(self, other):
+            if isinstance(other, Fraction):
+                return Fraction(self.num * other.num, self.den * other.den)
+            return float(self) * other
+        def __rmul__(self, other):
+            return other * float(self)
+        def __truediv__(self, other):
+            if isinstance(other, Fraction):
+                return Fraction(self.num * other.den, self.den * other.num)
+            return float(self) / other;
+        def __rtruediv__(self, other):
+            return other / float(self)
+        def __format__(self, format_spec):
+            integer_fmt = "bcdoxX"
+            float_fmt = "eEfFgGn%"
+            all_fmt = "".join(["s", integer_fmt, float_fmt])
+            if not format_spec or format_spec[-1] not in all_fmt:
+              value = str(self)
+            elif format_spec[-1] in integer_fmt:
+                value = int(self)
+            elif format_spec[-1] in float_fmt:
+                value = float(self)
+            else:
+                value = str(self)
+            return "{value:{spec}}".format(value=value, spec=format_spec)
+    %}
 }
 
 %extend openshot::OpenShotVersion {
         // Give the struct a string representation
-	const std::string __str__() {
-		return std::string(OPENSHOT_VERSION_FULL);
-	}
-	// And a repr for interactive use
-	const std::string __repr__() {
-		std::ostringstream result;
-		result << "OpenShotVersion('" << OPENSHOT_VERSION_FULL << "')";
-		return result.str();
-	}
+    const std::string __str__() {
+        return std::string(OPENSHOT_VERSION_FULL);
+    }
+    // And a repr for interactive use
+    const std::string __repr__() {
+        std::ostringstream result;
+        result << "OpenShotVersion('" << OPENSHOT_VERSION_FULL << "')";
+        return result.str();
+    }
 }
 
 %include "OpenShotVersion.h"
 %include "ReaderBase.h"
 %include "WriterBase.h"
+%include "AudioDevices.h"
+%include "AudioWaveformer.h"
 %include "CacheBase.h"
 %include "CacheDisk.h"
 %include "CacheMemory.h"
@@ -261,10 +277,6 @@
 %include "Clip.h"
 %include "Coordinate.h"
 %include "Color.h"
-#ifdef USE_BLACKMAGIC
-	%include "DecklinkReader.h"
-	%include "DecklinkWriter.h"
-#endif
 %include "DummyReader.h"
 %include "EffectBase.h"
 %include "Effects.h"
@@ -289,18 +301,17 @@
 %include "TimelineBase.h"
 %include "Timeline.h"
 %include "ZmqLogger.h"
-%include "AudioDeviceInfo.h"
 
 #ifdef USE_OPENCV
-	%include "ClipProcessingJobs.h"
-	%include "TrackedObjectBase.h"
-	%include "TrackedObjectBBox.h"
+    %include "ClipProcessingJobs.h"
+    %include "TrackedObjectBase.h"
+    %include "TrackedObjectBBox.h"
 #endif
 
 #ifdef USE_IMAGEMAGICK
-	%include "ImageReader.h"
-	%include "ImageWriter.h"
-	%include "TextReader.h"
+    %include "ImageReader.h"
+    %include "ImageWriter.h"
+    %include "TextReader.h"
 #endif
 
 /* Effects */
@@ -320,7 +331,7 @@
 %include "effects/Shift.h"
 %include "effects/Wave.h"
 #ifdef USE_OPENCV
-	%include "effects/Stabilizer.h"
-	%include "effects/Tracker.h"
-	%include "effects/ObjectDetection.h"
+    %include "effects/Stabilizer.h"
+    %include "effects/Tracker.h"
+    %include "effects/ObjectDetection.h"
 #endif

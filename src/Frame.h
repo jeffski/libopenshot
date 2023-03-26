@@ -6,27 +6,9 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */  
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_FRAME_H
 #define OPENSHOT_FRAME_H
@@ -39,26 +21,27 @@
 	#undef int64
 #endif
 
-
-#include <iomanip>
+#include <memory>
+#include <mutex>
 #include <sstream>
 #include <queue>
-#include <QApplication>
-#include <QImage>
-#include <memory>
-#include <unistd.h>
-#include "ZmqLogger.h"
+
 #include "ChannelLayouts.h"
-#include "AudioBufferSource.h"
-#include "AudioResampler.h"
 #include "Fraction.h"
-#include <OpenShotAudio.h>
-#ifdef USE_IMAGEMAGICK
-	#include "MagickUtilities.h"
-#endif
+
+#include <QColor>
+#include <QImage>
+
+class QApplication;
+
+namespace juce {
+	template <typename Type> class AudioBuffer;
+}
 
 namespace openshot
 {
+	class AudioBufferSource;
+	class AudioResampler;
 	/**
 	 * @brief This class represents a single frame of video (i.e. image & audio data)
 	 *
@@ -79,25 +62,25 @@ namespace openshot
 	 *
 	 * // Image only settings
 	 * Frame(1, // Frame number
-	 *       720, // Width of image
-	 *       480, // Height of image
-	 *       "#000000" // HTML color code of background color
-	 *       );
+	 *	   720, // Width of image
+	 *	   480, // Height of image
+	 *	   "#000000" // HTML color code of background color
+	 *	   );
 	 *
 	 * // Audio only
 	 * Frame(number, // Frame number
-	 *       44100, // Sample rate of audio stream
-	 *       2 // Number of audio channels
-	 *       );
+	 *	   44100, // Sample rate of audio stream
+	 *	   2 // Number of audio channels
+	 *	   );
 	 *
 	 * // Image and Audio settings (user defines all key settings)
 	 * Frame(number, // Frame number
-	 *       720, // Width of image
-	 *       480, // Height of image
-	 *       "#000000" // HTML color code of background color
-	 *       44100, // Sample rate of audio stream
-	 *       2 // Number of audio channels
-	 *       );
+	 *	   720, // Width of image
+	 *	   480, // Height of image
+	 *	   "#000000" // HTML color code of background color
+	 *	   44100, // Sample rate of audio stream
+	 *	   2 // Number of audio channels
+	 *	   );
 	 *
 	 * // Some methods require a shared pointer to an openshot::Frame object.
 	 * auto f = std::make_shared<openshot::Frame>(1, 720, 480, "#000000", 44100, 2);
@@ -109,11 +92,10 @@ namespace openshot
 	private:
 		std::shared_ptr<QImage> image;
 		std::shared_ptr<QImage> wave_image;
-		
+
 		std::shared_ptr<QApplication> previewApp;
-		juce::CriticalSection addingImageSection;
-        juce::CriticalSection addingAudioSection;
-		const unsigned char *qbuffer;
+		std::recursive_mutex addingImageMutex;
+		std::recursive_mutex addingAudioMutex;
 		openshot::Fraction pixel_ratio;
 		int channels;
 		ChannelLayout channel_layout;
@@ -122,6 +104,7 @@ namespace openshot
 		int sample_rate;
 		std::string color;
 		int64_t max_audio_sample; ///< The max audio sample count added to this frame
+		bool audio_reversed; ///< Keep track of audio reversal (i.e. time keyframe)
 
 #ifdef USE_OPENCV
 		cv::Mat imagecv; ///< OpenCV image. It will always be in BGR format
@@ -131,7 +114,7 @@ namespace openshot
 		int constrain(int color_value);
 
 	public:
-		std::shared_ptr<juce::AudioSampleBuffer> audio;
+		std::shared_ptr<juce::AudioBuffer<float>> audio;
 		int64_t number;	 ///< This is the frame number (starting at 1)
 		bool has_audio_data; ///< This frame has been loaded with audio data
 		bool has_image_data; ///< This frame has been loaded with pixel data
@@ -161,19 +144,17 @@ namespace openshot
 		/// Add (or replace) pixel data to the frame (based on a solid color)
 		void AddColor(int new_width, int new_height, std::string new_color);
 
+		/// Add (or replace) pixel data (filled with new_color)
+		void AddColor(const QColor& new_color);
+
 		/// Add (or replace) pixel data to the frame
 		void AddImage(int new_width, int new_height, int bytes_per_pixel, QImage::Format type, const unsigned char *pixels_);
- 
+
 		/// Add (or replace) pixel data to the frame
 		void AddImage(std::shared_ptr<QImage> new_image);
 
 		/// Add (or replace) pixel data to the frame (for only the odd or even lines)
 		void AddImage(std::shared_ptr<QImage> new_image, bool only_odd_lines);
-
-#ifdef USE_IMAGEMAGICK
-		/// Add (or replace) pixel data to the frame from an ImageMagick Image
-		void AddMagickImage(std::shared_ptr<Magick::Image> new_image);
-#endif
 
 		/// Add audio samples to a specific channel
 		void AddAudio(bool replaceSamples, int destChannel, int destStartSample, const float* source, int numSamples, float gainToApplyToSource);
@@ -191,9 +172,6 @@ namespace openshot
 		// Set the channel layout of audio samples (i.e. mono, stereo, 5 point surround, etc...)
 		void ChannelsLayout(openshot::ChannelLayout new_channel_layout) { channel_layout = new_channel_layout; };
 
-		/// Clean up buffer after QImage is deleted
-		static void cleanUpBuffer(void *info);
-
 		/// Clear the waveform image (and deallocate its memory)
 		void ClearWaveform();
 
@@ -209,14 +187,11 @@ namespace openshot
 		/// Get magnitude of range of samples (if channel is -1, return average of all channels for that sample)
 		float GetAudioSample(int channel, int sample, int magnitude_range);
 
-		/// Get an array of sample data
+		/// Get an array of sample data (and optional reverse the sample values)
 		float* GetAudioSamples(int channel);
 
 		/// Get an array of sample data (all channels interleaved together), using any sample rate
-		float* GetInterleavedAudioSamples(int new_sample_rate, openshot::AudioResampler* resampler, int* sample_count);
-
-		// Get a planar array of sample data, using any sample rate
-		float* GetPlanarAudioSamples(int new_sample_rate, openshot::AudioResampler* resampler, int* sample_count);
+		float* GetInterleavedAudioSamples(int* sample_count);
 
 		/// Get number of audio channels
 		int GetAudioChannelsCount();
@@ -224,18 +199,13 @@ namespace openshot
 		/// Get number of audio samples
 		int GetAudioSamplesCount();
 
-	    juce::AudioSampleBuffer *GetAudioSampleBuffer();
+		juce::AudioBuffer<float> *GetAudioSampleBuffer();
 
 		/// Get the size in bytes of this frame (rough estimate)
 		int64_t GetBytes();
 
 		/// Get pointer to Qt QImage image object
 		std::shared_ptr<QImage> GetImage();
-
-#ifdef USE_IMAGEMAGICK
-		/// Get pointer to ImageMagick image object
-		std::shared_ptr<Magick::Image> GetMagickImage();
-#endif
 
 		/// Set Pixel Aspect Ratio
 		openshot::Fraction GetPixelRatio() { return pixel_ratio; };
@@ -275,6 +245,10 @@ namespace openshot
 
 		/// Set the original sample rate of this frame's audio data
 		void SampleRate(int orig_sample_rate) { sample_rate = orig_sample_rate; };
+
+		/// Reverse the audio buffer of this frame (will only reverse a single time, regardless of how many times
+		/// you invoke this method)
+		void ReverseAudio();
 
 		/// Save the frame image to the specified path.  The image format can be BMP, JPG, JPEG, PNG, PPM, XBM, XPM
 		void Save(std::string path, float scale, std::string format="PNG", int quality=100);

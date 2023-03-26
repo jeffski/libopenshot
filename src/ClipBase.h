@@ -6,27 +6,9 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_CLIPBASE_H
 #define OPENSHOT_CLIPBASE_H
@@ -65,18 +47,14 @@ namespace openshot {
 		Json::Value add_property_choice_json(std::string name, int value, int selected_value) const;
 
 	public:
-		CacheMemory cache;
-
 		/// Constructor for the base clip
-		ClipBase() {
-			// Initialize values
-			position = 0.0;
-			layer = 0;
-			start = 0.0;
-			end = 0.0;
-			previous_properties = "";
-			timeline = NULL;
-		};
+		ClipBase() :
+			position(0.0),
+			layer(0),
+			start(0.0),
+			end(0.0),
+			previous_properties(""),
+			timeline(nullptr) {}
 
 		// Compare a clip using the Position() property
 		bool operator< ( ClipBase& a) { return (Position() < a.Position()); }
@@ -108,17 +86,17 @@ namespace openshot {
 		float Position() const { return position; } ///< Get position on timeline (in seconds)
 		int Layer() const { return layer; } ///< Get layer of clip on timeline (lower number is covered by higher numbers)
 		float Start() const { return start; } ///< Get start position (in seconds) of clip (trim start of video)
-		float End() const { return end; } ///< Get end position (in seconds) of clip (trim end of video)
+		virtual float End() const { return end; } ///< Get end position (in seconds) of clip (trim end of video)
 		float Duration() const { return end - start; } ///< Get the length of this clip (in seconds)
-		openshot::TimelineBase* ParentTimeline() { return timeline; } ///< Get the associated Timeline pointer (if any)
+		virtual openshot::TimelineBase* ParentTimeline() { return timeline; } ///< Get the associated Timeline pointer (if any)
 
 		// Set basic properties
 		void Id(std::string value) { id = value; } ///> Set the Id of this clip object
-		void Position(float value) { position = value; } ///< Set position on timeline (in seconds)
-		void Layer(int value) { layer = value; } ///< Set layer of clip on timeline (lower number is covered by higher numbers)
-		void Start(float value) { start = value; } ///< Set start position (in seconds) of clip (trim start of video)
-		void End(float value) { end = value; } ///< Set end position (in seconds) of clip (trim end of video)
-		void ParentTimeline(openshot::TimelineBase* new_timeline) { timeline = new_timeline; } ///< Set associated Timeline pointer
+		void Position(float value); ///< Set position on timeline (in seconds)
+		void Layer(int value); ///< Set layer of clip on timeline (lower number is covered by higher numbers)
+		void Start(float value); ///< Set start position (in seconds) of clip (trim start of video)
+		virtual void End(float value); ///< Set end position (in seconds) of clip (trim end of video)
+		virtual void ParentTimeline(openshot::TimelineBase* new_timeline) { timeline = new_timeline; } ///< Set associated Timeline pointer
 
 		// Get and Set JSON methods
 		virtual std::string Json() const = 0; ///< Generate JSON string of this object

@@ -5,24 +5,8 @@
 # @section LICENSE
 #
 # Copyright (c) 2008-2019 OpenShot Studios, LLC
-# <http://www.openshotstudios.com/>. This file is part of
-# OpenShot Library (libopenshot), an open-source project dedicated to
-# delivering high quality video editing and animation solutions to the
-# world. For more information visit <http://www.openshot.org/>.
 #
-# OpenShot Library (libopenshot) is free software: you can redistribute it
-# and/or modify it under the terms of the GNU Lesser General Public License
-# as published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# OpenShot Library (libopenshot) is distributed in the hope that it will be
-# useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU Lesser General Public License for more details.
-#
-# You should have received a copy of the GNU Lesser General Public License
-# along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
-################################################################################
+# SPDX-License-Identifier: LGPL-3.0-or-later
 
 # Allow spaces in test names
 if(POLICY CMP0110)
@@ -32,23 +16,15 @@ endif()
 # Test media path, used by unit tests for input data
 file(TO_NATIVE_PATH "${PROJECT_SOURCE_DIR}/examples/" TEST_MEDIA_PATH)
 
-################# BLACKMAGIC DECKLINK ###################
-if(ENABLE_BLACKMAGIC)
-	# Find BlackMagic DeckLinkAPI libraries
-	find_package(BlackMagic)
-
-	if(BLACKMAGIC_FOUND)
-		# Include Blackmagic headers (needed for compile)
-		include_directories(${BLACKMAGIC_INCLUDE_DIR})
-	endif()
-endif()
-
 ###
 ###  TEST SOURCE FILES
 ###
 set(OPENSHOT_TESTS
+  AudioDeviceManager
+  AudioWaveformer
   CacheDisk
   CacheMemory
+  Caption
   Clip
   Color
   Coordinate
@@ -60,10 +36,14 @@ set(OPENSHOT_TESTS
   FrameMapper
   KeyFrame
   Point
+  Profiles
   QtImageReader
   ReaderBase
   Settings
   Timeline
+  # Effects
+  ChromaKey
+  Crop
 )
 
 # ImageMagick related test files
@@ -92,17 +72,38 @@ if(NOT BUILD_TESTING)
   return()
 endif()
 
-# Create object library for test executable main(),
-# to avoid recompiling for every test
-add_library(catch-main OBJECT catch_main.cpp)
-target_link_libraries(catch-main PUBLIC Catch2::Catch2)
+add_library(openshot_catch2 INTERFACE)
+target_include_directories(openshot_catch2 INTERFACE
+  "${CMAKE_CURRENT_BINARY_DIR}"
+)
+target_compile_definitions(openshot_catch2 INTERFACE
+  TEST_MEDIA_PATH="${TEST_MEDIA_PATH}")
+
+if(TARGET Catch2::Catch2WithMain)
+  # Catch2 v3 works a bit differently
+  configure_file(catch2v3.h.in openshot_catch.h)
+  target_link_libraries(openshot_catch2 INTERFACE Catch2::Catch2WithMain)
+else()
+  configure_file(catch2v2.h.in openshot_catch.h)
+  # Create object library for test executable main(),
+  # to avoid recompiling for every test
+  add_library(catch-main OBJECT catch_main.cpp)
+  target_link_libraries(catch-main PUBLIC Catch2::Catch2)
+  target_include_directories(catch-main PUBLIC
+    "${CMAKE_CURRENT_BINARY_DIR}")
+  target_link_libraries(openshot_catch2 INTERFACE Catch2::Catch2)
+  target_sources(openshot_catch2 INTERFACE $<TARGET_OBJECTS:catch-main>)
+endif()
 
 foreach(tname ${OPENSHOT_TESTS})
-  add_executable(openshot-${tname}-test ${tname}.cpp $<TARGET_OBJECTS:catch-main>)
-  target_compile_definitions(openshot-${tname}-test PRIVATE
-    TEST_MEDIA_PATH="${TEST_MEDIA_PATH}"
+  add_executable(openshot-${tname}-test
+    ${tname}.cpp
   )
-  target_link_libraries(openshot-${tname}-test Catch2::Catch2 openshot)
+  target_link_libraries(openshot-${tname}-test
+    openshot_catch2
+    openshot
+  )
+
   # Automatically configure CTest targets from Catch2 test cases
   catch_discover_tests(
     openshot-${tname}-test
@@ -113,13 +114,15 @@ foreach(tname ${OPENSHOT_TESTS})
   list(APPEND CATCH2_TEST_TARGETS openshot-${tname}-test)
   list(APPEND CATCH2_TEST_NAMES ${tname})
 endforeach()
+
 # Add an additional special-case test, for an envvar-dependent setting
-add_test(NAME [=["Settings:Debug logging (enabled)"]=]
-  COMMAND
-    openshot-Settings-test "[environment]"
-  WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-)
-set_tests_properties([=["Settings:Debug logging (enabled)"]=]
+catch_discover_tests(
+  openshot-Settings-test
+  TEST_LIST Settings_EXTRA_TESTS
+  TEST_SPEC "[environment]"
+  TEST_PREFIX Settings:
+  TEST_SUFFIX "(enabled)"
+  TEST_WORKING_DIR "${_test_dir}"
   PROPERTIES
     LABELS Settings
     ENVIRONMENT "LIBOPENSHOT_DEBUG=1"

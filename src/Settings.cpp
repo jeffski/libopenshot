@@ -6,27 +6,9 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include <cstdlib>        // For std::getenv
 
@@ -51,7 +33,13 @@ Settings *Settings::Instance()
 		m_pInstance->DE_LIMIT_WIDTH_MAX = 1950;
 		m_pInstance->HW_DE_DEVICE_SET = 0;
 		m_pInstance->HW_EN_DEVICE_SET = 0;
+		m_pInstance->VIDEO_CACHE_PERCENT_AHEAD = 0.7;
+		m_pInstance->VIDEO_CACHE_MIN_PREROLL_FRAMES = 24;
+		m_pInstance->VIDEO_CACHE_MAX_PREROLL_FRAMES = 48;
+		m_pInstance->VIDEO_CACHE_MAX_FRAMES = 30 * 10;
+		m_pInstance->ENABLE_PLAYBACK_CACHING = true;
 		m_pInstance->PLAYBACK_AUDIO_DEVICE_NAME = "";
+		m_pInstance->PLAYBACK_AUDIO_DEVICE_TYPE = "";
 		m_pInstance->DEBUG_TO_STDERR = false;
 		auto env_debug = std::getenv("LIBOPENSHOT_DEBUG");
 		if (env_debug != nullptr)

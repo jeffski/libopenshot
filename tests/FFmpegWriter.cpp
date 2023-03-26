@@ -6,38 +6,21 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include <sstream>
 #include <memory>
 
-#include <catch2/catch.hpp>
+#include "openshot_catch.h"
 
 #include "FFmpegWriter.h"
 #include "Exceptions.h"
 #include "FFmpegReader.h"
 #include "Fraction.h"
 #include "Frame.h"
+#include "Timeline.h"
 
 using namespace std;
 using namespace openshot;
@@ -45,7 +28,7 @@ using namespace openshot;
 TEST_CASE( "Webm", "[libopenshot][ffmpegwriter]" )
 {
 	// Reader
-	stringstream path;
+	std::stringstream path;
 	path << TEST_MEDIA_PATH << "sintel_trailer-720p.mp4";
 	FFmpegReader r(path.str());
 	r.Open();
@@ -92,7 +75,7 @@ TEST_CASE( "Webm", "[libopenshot][ffmpegwriter]" )
 TEST_CASE( "Options_Overloads", "[libopenshot][ffmpegwriter]" )
 {
 	// Reader
-	stringstream path;
+	std::stringstream path;
 	path << TEST_MEDIA_PATH << "sintel_trailer-720p.mp4";
 	FFmpegReader r(path.str());
 	r.Open();
@@ -128,4 +111,125 @@ TEST_CASE( "Options_Overloads", "[libopenshot][ffmpegwriter]" )
 	CHECK(r1.info.pixel_ratio.den == 1);
 	CHECK_FALSE(r1.info.interlaced_frame);
 	CHECK(r1.info.top_field_first == true);
+}
+
+
+TEST_CASE( "DisplayInfo", "[libopenshot][ffmpegwriter]" )
+{
+	// Reader
+	std::stringstream path;
+	path << TEST_MEDIA_PATH << "sintel_trailer-720p.mp4";
+	FFmpegReader r(path.str());
+	r.Open();
+
+	/* WRITER ---------------- */
+	FFmpegWriter w("output1.webm");
+
+	// Set options
+	w.SetAudioOptions(true, "libvorbis", 44100, 2, LAYOUT_STEREO, 188000);
+	w.SetVideoOptions(
+		true, "libvpx",
+		Fraction(24,1),
+		1280, 720,
+		Fraction(1,1),
+		false, false,
+		30000000);
+
+	// Open writer
+	w.Open();
+
+	std::string expected(
+		R"(----------------------------
+----- File Information -----
+----------------------------
+--> Has Video: true
+--> Has Audio: true
+--> Has Single Image: false
+--> Duration: 0.00 Seconds
+--> File Size: 0.00 MB
+----------------------------
+----- Video Attributes -----
+----------------------------
+--> Width: 1280
+--> Height: 720
+--> Pixel Format: -1
+--> Frames Per Second: 24.00 (24/1)
+--> Video Bit Rate: 30000 kb/s
+--> Pixel Ratio: 1.00 (1/1)
+--> Display Aspect Ratio: 1.78 (16/9)
+--> Video Codec: libvpx
+--> Video Length: 0 Frames
+--> Video Stream Index: -1
+--> Video Timebase: 0.04 (1/24)
+--> Interlaced: false
+--> Interlaced: Top Field First: false
+----------------------------
+----- Audio Attributes -----
+----------------------------
+--> Audio Codec: libvorbis
+--> Audio Bit Rate: 188 kb/s
+--> Sample Rate: 44100 Hz
+--> # of Channels: 2
+--> Channel Layout: 3
+--> Audio Stream Index: -1
+--> Audio Timebase: 1.00 (1/1)
+----------------------------)");
+
+	// Store the DisplayInfo() text in 'output'
+	std::stringstream output;
+	w.DisplayInfo(&output);
+
+	w.Close();
+
+	// Compare a [0, expected.size()) substring of output to expected
+	CHECK(output.str().substr(0, expected.size()) == expected);
+}
+
+TEST_CASE( "Gif", "[libopenshot][ffmpegwriter]" )
+{
+    // Reader
+    std::stringstream path;
+    path << TEST_MEDIA_PATH << "sintel_trailer-720p.mp4";
+
+    // Create Gif Clip
+    Clip clip_video(path.str());
+    clip_video.Layer(0);
+    clip_video.Position(0.0);
+    clip_video.Open();
+
+    // Create Timeline w/ 1 Gif Clip (with 0 sample rate, and 0 channels)
+    openshot::Timeline t(1280, 720, Fraction(30,1), 0, 0, LAYOUT_MONO);
+    t.AddClip(&clip_video);
+    t.Open();
+
+    /* WRITER ---------------- */
+    FFmpegWriter w("output1.gif");
+
+    // Set options (no audio options are set)
+    w.SetVideoOptions(true, "gif", Fraction(24,1), 1280, 720, Fraction(1,1), false, false, 15000000);
+
+    // Create streams
+    w.PrepareStreams();
+
+    // Open writer
+    w.Open();
+
+    // Write some frames
+    w.WriteFrame(&t, 1, 60);
+
+    // Close writer & reader
+    w.Close();
+    t.Close();
+
+    FFmpegReader r1("output1.gif");
+    r1.Open();
+
+    // Verify various settings on new Gif
+    CHECK(r1.GetFrame(1)->GetAudioChannelsCount() == 0);
+    CHECK(r1.GetFrame(1)->GetAudioSamplesCount() == 0);
+    CHECK(r1.info.fps.num == 24);
+    CHECK(r1.info.fps.den == 1);
+
+    // Close reader
+    r1.Close();
 }

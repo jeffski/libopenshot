@@ -6,27 +6,9 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "Hue.h"
 #include "Exceptions.h"
@@ -87,15 +69,24 @@ std::shared_ptr<openshot::Frame> Hue::GetFrame(std::shared_ptr<openshot::Frame> 
 	#pragma omp parallel for shared (pixels)
 	for (int pixel = 0; pixel < pixel_count; ++pixel)
 	{
-		// Get the RGB values from the pixel (ignore the alpha channel)
-		int R = pixels[pixel * 4];
-		int G = pixels[pixel * 4 + 1];
-		int B = pixels[pixel * 4 + 2];
+		// Calculate alpha % (to be used for removing pre-multiplied alpha value)
+		int A = pixels[pixel * 4 + 3];
+		float alpha_percent = A / 255.0;
+
+		// Get RGB values, and remove pre-multiplied alpha
+		int R = pixels[pixel * 4 + 0] / alpha_percent;
+		int G = pixels[pixel * 4 + 1] / alpha_percent;
+		int B = pixels[pixel * 4 + 2] / alpha_percent;
 
 		// Multiply each color by the hue rotation matrix
 		pixels[pixel * 4] = constrain(R * matrix[0] + G * matrix[1] + B * matrix[2]);
 		pixels[pixel * 4 + 1] = constrain(R * matrix[2] + G * matrix[0] + B * matrix[1]);
 		pixels[pixel * 4 + 2] = constrain(R * matrix[1] + G * matrix[2] + B * matrix[0]);
+
+		// Pre-multiply the alpha back into the color channels
+		pixels[pixel * 4 + 0] *= alpha_percent;
+		pixels[pixel * 4 + 1] *= alpha_percent;
+		pixels[pixel * 4 + 2] *= alpha_percent;
 	}
 
 	// return the modified frame

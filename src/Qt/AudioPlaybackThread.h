@@ -7,60 +7,62 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_AUDIO_PLAYBACK_THREAD_H
 #define OPENSHOT_AUDIO_PLAYBACK_THREAD_H
 
-#include "../ReaderBase.h"
-#include "../RendererBase.h"
-#include "../AudioReaderSource.h"
-#include "../AudioDeviceInfo.h"
-#include "../Settings.h"
+#include "ReaderBase.h"
+#include "RendererBase.h"
+#include "AudioReaderSource.h"
+#include "AudioDevices.h"
+#include "AudioReaderSource.h"
+#include "Qt/VideoCacheThread.h"
+
+#include <OpenShotAudio.h>
+#include <AppConfig.h>
+#include <juce_audio_basics/juce_audio_basics.h>
+#include <juce_audio_devices/juce_audio_devices.h>
 
 namespace openshot
 {
 
-	/**
-	 *  @brief Singleton wrapper for AudioDeviceManager (to prevent multiple instances).
-	 */
-	class AudioDeviceManagerSingleton {
-	private:
+// Forward decls
+class ReaderBase;
+class Frame;
+class PlayerPrivate;
+class QtPlayer;
+
+
+/**
+ *  @brief Singleton wrapper for AudioDeviceManager (to prevent multiple instances).
+ */
+class AudioDeviceManagerSingleton {
+private:
 		/// Default constructor (Don't allow user to create an instance of this singleton)
 		AudioDeviceManagerSingleton(){ initialise_error=""; };
 
 		/// Private variable to keep track of singleton instance
-		static AudioDeviceManagerSingleton * m_pInstance;
+		static AudioDeviceManagerSingleton* m_pInstance;
 
-	public:
+public:
 		/// Error found during JUCE initialise method
 		std::string initialise_error;
 
-		/// List of valid audio device names
-		std::vector<openshot::AudioDeviceInfo> audio_device_names;
+		/// Default sample rate (as detected)
+		double defaultSampleRate;
 
-		/// Override with no channels and no preferred audio device
-		static AudioDeviceManagerSingleton * Instance();
+		/// Current open audio device (or last attempted device - if none were successful)
+		AudioDeviceInfo currentAudioDevice;
+
+		/// Override with default sample rate & channels (44100, 2) and no preferred audio device
+		static AudioDeviceManagerSingleton* Instance();
+
+		/// Override with custom sample rate & channels and no preferred audio device
+		/// sample rate and channels are only set on 1st call (when singleton is created)
+		static AudioDeviceManagerSingleton* Instance(int rate, int channels);
 
 		/// Public device manager property
 		juce::AudioDeviceManager audioDeviceManager;
@@ -69,11 +71,11 @@ namespace openshot
 		void CloseAudioDevice();
 	};
 
-    /**
-     *  @brief The audio playback thread
-     */
-    class AudioPlaybackThread : juce::Thread
-    {
+	/**
+	 *  @brief The audio playback thread
+	 */
+	class AudioPlaybackThread : juce::Thread
+	{
 		juce::AudioSourcePlayer player;
 		juce::AudioTransportSource transport;
 		juce::MixerAudioSource mixer;
@@ -81,12 +83,12 @@ namespace openshot
 		double sampleRate;
 		int numChannels;
 		juce::WaitableEvent play;
-		juce::WaitableEvent played;
-		int buffer_size;
 		bool is_playing;
 		juce::TimeSliceThread time_thread;
+		openshot::VideoCacheThread *videoCache; /// The cache thread (for pre-roll checking)
+
 		/// Constructor
-		AudioPlaybackThread();
+		AudioPlaybackThread(openshot::VideoCacheThread* cache);
 		/// Destructor
 		~AudioPlaybackThread();
 
@@ -95,9 +97,6 @@ namespace openshot
 
 		/// Get the current frame object (which is filling the buffer)
 		std::shared_ptr<openshot::Frame> getFrame();
-
-		/// Get the current frame number being played
-		int64_t getCurrentFramePosition();
 
 		/// Play the audio
 		void Play();
@@ -117,22 +116,35 @@ namespace openshot
 		/// Get Speed (The speed and direction to playback a reader (1=normal, 2=fast, 3=faster, -1=rewind, etc...)
 		int getSpeed() const { if (source) return source->getSpeed(); else return 1; }
 
-        /// Get Audio Error (if any)
-        std::string getError()
-        {
-            return AudioDeviceManagerSingleton::Instance()->initialise_error;
-        }
+		/// Get audio initialization errors (if any)
+		std::string getError()
+		{
+			return AudioDeviceManagerSingleton::Instance()->initialise_error;
+		}
 
-        /// Get Audio Device Names (if any)
-        std::vector<openshot::AudioDeviceInfo> getAudioDeviceNames()
-        {
-            return AudioDeviceManagerSingleton::Instance()->audio_device_names;
-        };
+		/// Get detected audio sample rate (from active, open audio device)
+		double getDefaultSampleRate()
+		{
+			return AudioDeviceManagerSingleton::Instance()->defaultSampleRate;
+		}
+
+		/// Get active, open audio device (or last attempted device if none were successful)
+		AudioDeviceInfo getCurrentAudioDevice()
+		{
+			return AudioDeviceManagerSingleton::Instance()->currentAudioDevice;
+		}
+
+		/// Get vector of audio device names & types
+		AudioDeviceList getAudioDeviceNames()
+		{
+			AudioDevices devs;
+			return devs.getNames();
+		};
 
 		friend class PlayerPrivate;
 		friend class QtPlayer;
-    };
+};
 
-}
+}  // namespace openshot
 
 #endif // OPENSHOT_AUDIO_PLAYBACK_THREAD_H

@@ -6,35 +6,22 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "Mask.h"
+
 #include "Exceptions.h"
+
+#include "ReaderBase.h"
+#include "ChunkReader.h"
 #include "FFmpegReader.h"
+#include "QtImageReader.h"
+
 #ifdef USE_IMAGEMAGICK
 	#include "ImageReader.h"
 #endif
-#include "ReaderBase.h"
 
 using namespace openshot;
 
@@ -123,15 +110,12 @@ std::shared_ptr<openshot::Frame> Mask::GetFrame(std::shared_ptr<openshot::Frame>
 		// Get the average luminosity
 		int gray_value = qGray(R, G, B);
 
-		// Adjust the contrast
-		float factor = (259 * (contrast_value + 255)) / (255 * (259 - contrast_value));
-		gray_value = constrain((factor * (gray_value - 128)) + 128);
-
 		// Adjust the brightness
 		gray_value += (255 * brightness_value);
 
-		// Constrain the value from 0 to 255
-		gray_value = constrain(gray_value);
+		// Adjust the contrast
+		float factor = (20 / std::fmax(0.00001, 20.0 - contrast_value));
+		gray_value = (factor * (gray_value - 128) + 128);
 
 		// Calculate the % change in alpha
 		float alpha_percent = float(constrain(A - gray_value)) / 255.0;
@@ -139,10 +123,10 @@ std::shared_ptr<openshot::Frame> Mask::GetFrame(std::shared_ptr<openshot::Frame>
 		// Set the alpha channel to the gray value
 		if (replace_image) {
 			// Replace frame pixels with gray value (including alpha channel)
-			pixels[byte_index + 0] = gray_value;
-			pixels[byte_index + 1] = gray_value;
-			pixels[byte_index + 2] = gray_value;
-			pixels[byte_index + 3] = gray_value;
+			pixels[byte_index + 0] = constrain(255 * alpha_percent);
+			pixels[byte_index + 1] = constrain(255 * alpha_percent);
+			pixels[byte_index + 2] = constrain(255 * alpha_percent);
+			pixels[byte_index + 3] = constrain(255 * alpha_percent);
 		} else {
 			// Mulitply new alpha value with all the colors (since we are using a premultiplied
 			// alpha format)

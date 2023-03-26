@@ -6,34 +6,17 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_VIDEO_CACHE_THREAD_H
 #define OPENSHOT_VIDEO_CACHE_THREAD_H
 
-#include "../OpenMPUtilities.h"
-#include "../ReaderBase.h"
-#include "../RendererBase.h"
+#include "ReaderBase.h"
+
+#include <AppConfig.h>
+#include <juce_audio_basics/juce_audio_basics.h>
 
 namespace openshot
 {
@@ -45,24 +28,28 @@ namespace openshot
      */
     class VideoCacheThread : Thread
     {
-	private:
-	std::atomic_int position;
-
 	protected:
-	std::shared_ptr<Frame> frame;
+	std::shared_ptr<Frame> last_cached_frame;
 	int speed;
+	int last_speed;
 	bool is_playing;
+	int64_t requested_display_frame;
 	int64_t current_display_frame;
+	int64_t cached_frame_count = 0;
 	ReaderBase *reader;
-	int max_concurrent_frames;
+	int64_t min_frames_ahead;
+	int64_t max_frames_ahead;
+	int64_t timeline_max_frame;
+	bool should_pause_cache;
+	bool should_break;
 
 	/// Constructor
 	VideoCacheThread();
 	/// Destructor
 	~VideoCacheThread();
 
-	/// Get the currently playing frame number (if any)
-	int64_t getCurrentFramePosition();
+    /// Get the size in bytes of a frame (rough estimate)
+    int64_t getBytes(int width, int height, int sample_rate, int channels, float fps);
 
     /// Get Speed (The speed and direction to playback a reader (1=normal, 2=fast, 3=faster, -1=rewind, etc...)
     int getSpeed() const { return speed; }
@@ -70,14 +57,14 @@ namespace openshot
 	/// Play the video
 	void Play();
 
-	/// Seek the reader to a particular frame number
-	void Seek(int64_t new_position);
+    /// Seek the reader to a particular frame number
+    void Seek(int64_t new_position);
 
-	/// Set the currently displaying frame number
-	void setCurrentFramePosition(int64_t current_frame_number);
+	/// Seek the reader to a particular frame number and optionally start the pre-roll
+	void Seek(int64_t new_position, bool start_preroll);
 
-    /// Set Speed (The speed and direction to playback a reader (1=normal, 2=fast, 3=faster, -1=rewind, etc...)
-    void setSpeed(int new_speed) { speed = new_speed; }
+	/// Set Speed (The speed and direction to playback a reader (1=normal, 2=fast, 3=faster, -1=rewind, etc...)
+	void setSpeed(int new_speed);
 
 	/// Stop the audio playback
 	void Stop();
@@ -91,8 +78,11 @@ namespace openshot
 	/// Parent class of VideoCacheThread
 	friend class PlayerPrivate;
 	friend class QtPlayer;
-    };
 
+    public:
+        /// Is cache ready for video/audio playback
+        bool isReady();
+    };
 }
 
 #endif // OPENSHOT_VIDEO_CACHE_THREAD_H

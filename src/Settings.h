@@ -6,27 +6,9 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_SETTINGS_H
 #define OPENSHOT_SETTINGS_H
@@ -100,8 +82,26 @@ namespace openshot {
 		/// Which GPU to use to encode (0 is the first)
 		int HW_EN_DEVICE_SET = 0;
 
+		/// Percentage of cache in front of the playhead (0.0 to 1.0)
+		float VIDEO_CACHE_PERCENT_AHEAD = 0.7;
+
+		/// Minimum number of frames to cache before playback begins
+		int VIDEO_CACHE_MIN_PREROLL_FRAMES = 24;
+
+		/// Max number of frames (ahead of playhead) to cache during playback
+		int VIDEO_CACHE_MAX_PREROLL_FRAMES = 48;
+
+		/// Max number of frames (when paused) to cache for playback
+		int VIDEO_CACHE_MAX_FRAMES = 30 * 10;
+
+		/// Enable/Disable the cache thread to pre-fetch and cache video frames before we need them
+		bool ENABLE_PLAYBACK_CACHING = true;
+
 		/// The audio device name to use during playback
 		std::string PLAYBACK_AUDIO_DEVICE_NAME = "";
+
+		/// The device type for the playback audio devices
+		std::string PLAYBACK_AUDIO_DEVICE_TYPE = "";
 
 		/// The current install path of OpenShot (needs to be set when using Timeline(path), since certain
 		/// paths depend on the location of OpenShot transitions and files)

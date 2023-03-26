@@ -1,31 +1,15 @@
-/* ####################### src/openshot.i (libopenshot) ########################
-# @brief SWIG configuration for libopenshot (to generate Ruby SWIG bindings)
-# @author Jonathan Thomas <jonathan@openshot.org>
-#
-# @section LICENSE
-#
-# Copyright (c) 2008-2019 OpenShot Studios, LLC
-# <http://www.openshotstudios.com/>. This file is part of
-# OpenShot Library (libopenshot), an open-source project dedicated to
-# delivering high quality video editing and animation solutions to the
-# world. For more information visit <http://www.openshot.org/>.
-#
-# OpenShot Library (libopenshot) is free software: you can redistribute it
-# and/or modify it under the terms of the GNU Lesser General Public License
-# as published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# OpenShot Library (libopenshot) is distributed in the hope that it will be
-# useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU Lesser General Public License for more details.
-#
-# You should have received a copy of the GNU Lesser General Public License
-# along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
-################################################################################ */
+/**
+ * @file
+ * @brief SWIG configuration for libopenshot (to generate Python SWIG bindings)
+ * @author Jonathan Thomas <jonathan@openshot.org>
+ *
+ * @section LICENSE
+*/
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
-
-%module openshot
+%module("threads"=1) openshot
 
 /* Suppress warnings about ignored operator= */
 %warnfilter(362);
@@ -54,15 +38,19 @@
 #ifdef USE_IMAGEMAGICK
 	%shared_ptr(Magick::Image)
 #endif
-%shared_ptr(juce::AudioSampleBuffer)
+%shared_ptr(juce::AudioBuffer<float>)
 %shared_ptr(openshot::Frame)
 
-/* Template specializations */
+/* Instantiate the required template specializations */
 %template() std::map<std::string, int>;
 %template() std::pair<int, int>;
 %template() std::vector<int>;
+%template() std::vector<float>;
 %template() std::pair<double, double>;
 %template() std::pair<float, float>;
+%template() std::pair<std::string, std::string>;
+%template() std::vector<std::pair<std::string, std::string>>;
+%template() std::vector<std::vector<float>>;
 
 %{
 /* Ruby and FFmpeg define competing RSHIFT macros,
@@ -76,6 +64,8 @@
 #include "OpenShotVersion.h"
 #include "ReaderBase.h"
 #include "WriterBase.h"
+#include "AudioDevices.h"
+#include "AudioWaveformer.h"
 #include "CacheBase.h"
 #include "CacheDisk.h"
 #include "CacheMemory.h"
@@ -110,7 +100,6 @@
 #include "TimelineBase.h"
 #include "Timeline.h"
 #include "ZmqLogger.h"
-#include "AudioDeviceInfo.h"
 
 /* Move FFmpeg's RSHIFT to FF_RSHIFT, if present */
 #ifdef RSHIFT
@@ -123,13 +112,6 @@
 #endif
 %}
 
-#ifdef USE_BLACKMAGIC
-	%{
-		#include "DecklinkReader.h"
-		#include "DecklinkWriter.h"
-	%}
-#endif
-
 #ifdef USE_IMAGEMAGICK
 	%{
 		#include "ImageReader.h"
@@ -138,9 +120,23 @@
 	%}
 #endif
 
+/* Wrap std templates (list, vector, etc...) */
+%template(ClipList) std::list<openshot::Clip *>;
+%template(EffectBaseList) std::list<openshot::EffectBase *>;
+%template(CoordinateVector) std::vector<openshot::Coordinate>;
+%template(PointsVector) std::vector<openshot::Point>;
+%template(FieldVector) std::vector<openshot::Field>;
+%template(MappedFrameVector) std::vector<openshot::MappedFrame>;
+%template(MetadataMap) std::map<std::string, std::string>;
+
+/* Deprecated */
+%template(AudioDeviceInfoVector) std::vector<openshot::AudioDeviceInfo>;
+
 %include "OpenShotVersion.h"
 %include "ReaderBase.h"
 %include "WriterBase.h"
+%include "AudioDevices.h"
+%include "AudioWaveformer.h"
 %include "CacheBase.h"
 %include "CacheDisk.h"
 %include "CacheMemory.h"
@@ -151,10 +147,6 @@
 %include "Clip.h"
 %include "Coordinate.h"
 %include "Color.h"
-#ifdef USE_BLACKMAGIC
-	%include "DecklinkReader.h"
-	%include "DecklinkWriter.h"
-#endif
 %include "DummyReader.h"
 %include "EffectBase.h"
 %include "Effects.h"
@@ -200,14 +192,12 @@
 %include "TimelineBase.h"
 %include "Timeline.h"
 %include "ZmqLogger.h"
-%include "AudioDeviceInfo.h"
 
 #ifdef USE_IMAGEMAGICK
 	%include "ImageReader.h"
 	%include "ImageWriter.h"
 	%include "TextReader.h"
 #endif
-
 
 /* Effects */
 %include "effects/Bars.h"
@@ -227,12 +217,3 @@
 %include "effects/Wave.h"
 
 
-/* Wrap std templates (list, vector, etc...) */
-%template(ClipList) std::list<openshot::Clip *>;
-%template(EffectBaseList) std::list<openshot::EffectBase *>;
-%template(CoordinateVector) std::vector<openshot::Coordinate>;
-%template(PointsVector) std::vector<openshot::Point>;
-%template(FieldVector) std::vector<openshot::Field>;
-%template(MappedFrameVector) std::vector<openshot::MappedFrame>;
-%template(MetadataMap) std::map<std::string, std::string>;
-%template(AudioDeviceInfoVector) std::vector<openshot::AudioDeviceInfo>;

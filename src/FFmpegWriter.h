@@ -3,38 +3,15 @@
  * @brief Header file for FFmpegWriter class
  * @author Jonathan Thomas <jonathan@openshot.org>, Fabrice Bellard
  *
- * @ref License
- */
-
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC, Fabrice Bellard
- * (http://www.openshotstudios.com). This file is part of
- * OpenShot Library (http://www.openshot.org), an open-source project
- * dedicated to delivering high quality video editing and animation solutions
- * to the world.
- *
  * This file is originally based on the Libavformat API example, and then modified
  * by the libopenshot project.
  *
- * OpenShot Library is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- * * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
+ * @ref License
  */
 
+// Copyright (c) 2008-2019 OpenShot Studios, LLC, Fabrice Bellard
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_FFMPEG_WRITER_H
 #define OPENSHOT_FFMPEG_WRITER_H
@@ -44,15 +21,6 @@
 
 // Include FFmpeg headers and macros
 #include "FFmpegUtilities.h"
-
-#include <cmath>
-#include <ctime>
-#include <unistd.h>
-#include "CacheMemory.h"
-#include "OpenMPUtilities.h"
-#include "ZmqLogger.h"
-#include "Settings.h"
-
 
 namespace openshot {
 
@@ -158,8 +126,7 @@ namespace openshot {
 		bool write_header;
 		bool write_trailer;
 
-		AVOutputFormat *fmt;
-		AVFormatContext *oc;
+		AVFormatContext* oc;
 		AVStream *audio_st, *video_st;
 		AVCodecContext *video_codec_ctx;
 		AVCodecContext *audio_codec_ctx;
