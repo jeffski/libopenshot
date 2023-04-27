@@ -997,10 +997,10 @@ void FFmpegWriter::close_video(AVFormatContext *oc, AVStream *st)
 #endif // USE_HW_ACCEL
 
 	// Free any previous memory allocations
-	if (video_codec_ctx != nullptr) {
-		AV_FREE_CONTEXT(video_codec_ctx);
-		av_free(video_codec_ctx);
-	}
+//	if (video_codec_ctx != nullptr) {
+//		AV_FREE_CONTEXT(video_codec_ctx);
+//		av_free(video_codec_ctx);
+//	}
 }
 
 // Close the audio codec
@@ -1028,10 +1028,10 @@ void FFmpegWriter::close_audio(AVFormatContext *oc, AVStream *st)
 	}
 
 	// Free any previous memory allocations
-	if (audio_codec_ctx != nullptr) {
-		AV_FREE_CONTEXT(audio_codec_ctx);
-		av_free(audio_codec_ctx);
-	}
+//	if (audio_codec_ctx != nullptr) {
+//		AV_FREE_CONTEXT(audio_codec_ctx);
+//		av_free(audio_codec_ctx);
+//	}
 }
 
 // Close the writer
