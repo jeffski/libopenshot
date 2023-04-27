@@ -524,11 +524,12 @@ std::shared_ptr<Frame> FrameMapper::GetFrame(int64_t requested_frame)
 		}
 
 		// Determine if reader contains audio samples
-		bool reader_has_audio = frame->SampleRate() > 0 && frame->GetAudioChannelsCount() > 0;
+		// bool reader_has_audio = frame->SampleRate() > 0 && frame->GetAudioChannelsCount() > 0;
 
 		// Resample audio on frame (if needed)
 		bool need_resampling = false;
-		if ((info.has_audio && reader_has_audio) &&
+//		if ((info.has_audio && reader_has_audio) &&
+		if (info.has_audio &&
 			(info.sample_rate != frame->SampleRate() ||
 			 info.channels != frame->GetAudioChannelsCount() ||
 			 info.channel_layout != frame->ChannelsLayout()))
