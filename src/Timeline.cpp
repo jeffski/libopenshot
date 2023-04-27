@@ -706,8 +706,8 @@ void Timeline::add_layer(std::shared_ptr<Frame> new_frame, Clip* source_clip, in
 	ZmqLogger::Instance()->AppendDebugMethod(
 		"Timeline::add_layer (Transform: Composite Image Layer: Completed)",
 		"source_frame->number", source_frame->number,
-		"new_frame->GetImage()->width()", new_frame->GetImage()->width(),
-		"new_frame->GetImage()->height()", new_frame->GetImage()->height());
+		"new_frame->GetImage()->width()", new_frame->GetWidth(),
+		"new_frame->GetImage()->height()", new_frame->GetHeight());
 }
 
 // Update the list of 'opened' clips
@@ -1096,6 +1096,9 @@ std::vector<Clip*> Timeline::find_intersecting_clips(int64_t requested_frame, in
 
 // Set the cache object used by this reader
 void Timeline::SetCache(CacheBase* new_cache) {
+	// Get lock (prevent getting frames while this happens)
+	const std::lock_guard<std::recursive_mutex> lock(getFrameMutex);
+
 	// Destroy previous cache (if managed by timeline)
 	if (managed_cache && final_cache) {
 		delete final_cache;

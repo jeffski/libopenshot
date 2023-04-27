@@ -234,6 +234,9 @@ Clip::~Clip()
 		delete resampler;
 		resampler = NULL;
 	}
+
+	// Close clip
+	Close();
 }
 
 // Attach clip to bounding box
@@ -255,19 +258,16 @@ void Clip::AttachToObject(std::string object_id)
 			SetAttachedClip(clipObject);
 		}
 	}
-	return;
 }
 
 // Set the pointer to the trackedObject this clip is attached to
 void Clip::SetAttachedObject(std::shared_ptr<openshot::TrackedObjectBase> trackedObject){
 	parentTrackedObject = trackedObject;
-	return;
 }
 
 // Set the pointer to the clip this clip is attached to
 void Clip::SetAttachedClip(Clip* clipObject){
 	parentClipObject = clipObject;
-	return;
 }
 
 /// Set the current reader
@@ -340,16 +340,16 @@ void Clip::Open()
 // Close the internal reader
 void Clip::Close()
 {
-	is_open = false;
-	if (reader) {
+	if (is_open && reader) {
 		ZmqLogger::Instance()->AppendDebugMethod("Clip::Close");
 
 		// Close the reader
 		reader->Close();
 	}
-	else
-		// Throw error if reader not initialized
-		throw ReaderClosed("No Reader has been initialized for this Clip.  Call Reader(*reader) before calling this method.");
+
+	// Clear cache
+	final_cache.Clear();
+	is_open = false;
 }
 
 // Get end position of clip (trim end of video), which can be affected by the time curve.
@@ -440,7 +440,7 @@ std::shared_ptr<Frame> Clip::GetFrame(std::shared_ptr<openshot::Frame> backgroun
 		apply_timemapping(frame);
 
 		// Apply waveform image (if any)
-		apply_waveform(frame, background_frame->GetImage());
+		apply_waveform(frame, background_frame);
 
 		// Apply local effects to the frame (if any)
 		apply_effects(frame);
@@ -455,7 +455,7 @@ std::shared_ptr<Frame> Clip::GetFrame(std::shared_ptr<openshot::Frame> backgroun
 		}
 
 		// Apply keyframe / transforms
-		apply_keyframes(frame, background_frame->GetImage());
+		apply_keyframes(frame, background_frame);
 
 		// Add final frame to cache
 		final_cache.Add(frame);
@@ -765,11 +765,8 @@ std::string Clip::PropertiesJSON(int64_t requested_frame) const {
 	root["display"] = add_property_json("Frame Number", display, "int", "", NULL, 0, 3, false, requested_frame);
 	root["mixing"] = add_property_json("Volume Mixing", mixing, "int", "", NULL, 0, 2, false, requested_frame);
 	root["waveform"] = add_property_json("Waveform", waveform, "int", "", NULL, 0, 1, false, requested_frame);
-	if (!parentObjectId.empty()) {
-		root["parentObjectId"] = add_property_json("Parent", 0.0, "string", parentObjectId, NULL, -1, -1, false, requested_frame);
-	} else {
-		root["parentObjectId"] = add_property_json("Parent", 0.0, "string", "", NULL, -1, -1, false, requested_frame);
-	}
+	root["parentObjectId"] = add_property_json("Parent", 0.0, "string", parentObjectId, NULL, -1, -1, false, requested_frame);
+
 	// Add gravity choices (dropdown style)
 	root["gravity"]["choices"].append(add_property_choice_json("Top Left", GRAVITY_TOP_LEFT, gravity));
 	root["gravity"]["choices"].append(add_property_choice_json("Top Center", GRAVITY_TOP, gravity));
@@ -803,7 +800,7 @@ std::string Clip::PropertiesJSON(int64_t requested_frame) const {
 	root["waveform"]["choices"].append(add_property_choice_json("No", false, waveform));
 
 	// Add the parentTrackedObject's properties
-	if (parentTrackedObject)
+	if (parentTrackedObject && parentClipObject)
 	{
 		// Convert Clip's frame position to Timeline's frame position
 		long clip_start_position = round(Position() * info.fps.ToDouble()) + 1;
@@ -1235,7 +1232,7 @@ bool Clip::isEqual(double a, double b)
 }
 
 // Apply keyframes to the source frame (if any)
-void Clip::apply_keyframes(std::shared_ptr<Frame> frame, std::shared_ptr<QImage> background_canvas) {
+void Clip::apply_keyframes(std::shared_ptr<Frame> frame, std::shared_ptr<Frame> background_frame) {
 	// Skip out if video was disabled or only an audio frame (no visualisation in use)
 	if (!frame->has_image_data) {
 		// Skip the rest of the image processing for performance reasons
@@ -1244,6 +1241,7 @@ void Clip::apply_keyframes(std::shared_ptr<Frame> frame, std::shared_ptr<QImage>
 
 	// Get image from clip
 	std::shared_ptr<QImage> source_image = frame->GetImage();
+	std::shared_ptr<QImage> background_canvas = background_frame->GetImage();
 
 	// Get transform from clip's keyframes
 	QTransform transform = get_transform(frame, background_canvas->width(), background_canvas->height());
@@ -1302,7 +1300,7 @@ void Clip::apply_keyframes(std::shared_ptr<Frame> frame, std::shared_ptr<QImage>
 }
 
 // Apply apply_waveform image to the source frame (if any)
-void Clip::apply_waveform(std::shared_ptr<Frame> frame, std::shared_ptr<QImage> background_canvas) {
+void Clip::apply_waveform(std::shared_ptr<Frame> frame, std::shared_ptr<Frame> background_frame) {
 
 	if (!Waveform()) {
 		// Exit if no waveform is needed
@@ -1311,6 +1309,7 @@ void Clip::apply_waveform(std::shared_ptr<Frame> frame, std::shared_ptr<QImage> 
 
 	// Get image from clip
 	std::shared_ptr<QImage> source_image = frame->GetImage();
+	std::shared_ptr<QImage> background_canvas = background_frame->GetImage();
 
 	// Debug output
 	ZmqLogger::Instance()->AppendDebugMethod(
@@ -1449,14 +1448,14 @@ QTransform Clip::get_transform(std::shared_ptr<Frame> frame, int width, int heig
 
 	// Get the parentTrackedObject properties
 	if (parentTrackedObject){
-
 		// Convert Clip's frame position to Timeline's frame position
 		long clip_start_position = round(Position() * info.fps.ToDouble()) + 1;
 		long clip_start_frame = (Start() * info.fps.ToDouble()) + 1;
 		double timeline_frame_number = frame->number + clip_start_position - clip_start_frame;
 
 		// Get parentTrackedObject's parent clip's properties
-		std::map<std::string, float> trackedObjectParentClipProperties = parentTrackedObject->GetParentClipProperties(timeline_frame_number);
+		std::map<std::string, float> trackedObjectParentClipProperties =
+				parentTrackedObject->GetParentClipProperties(timeline_frame_number);
 
 		// Get the attached object's parent clip's properties
 		if (!trackedObjectParentClipProperties.empty())
