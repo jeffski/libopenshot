@@ -144,12 +144,18 @@ void QtHtmlReader::Close()
 // Get an openshot::Frame object for a specific frame number of this reader.
 std::shared_ptr<Frame> QtHtmlReader::GetFrame(int64_t requested_frame)
 {
+	// Create a scoped lock, allowing only a single thread to run the following code at one time
+	const std::lock_guard<std::recursive_mutex> lock(getFrameMutex);
+
 	if (image)
 	{
+		auto sample_count = Frame::GetSamplesPerFrame(requested_frame, info.fps, info.sample_rate, info.channels);
+
 		// Create or get frame object
 		auto image_frame = std::make_shared<Frame>(
 			requested_frame, image->size().width(), image->size().height(),
-			background_color, 0, 2);
+			background_color, sample_count, info.channels
+		);
 
 		// Add Image data to frame
 		image_frame->AddImage(image);
@@ -157,14 +163,14 @@ std::shared_ptr<Frame> QtHtmlReader::GetFrame(int64_t requested_frame)
 		// return frame object
 		return image_frame;
 	} else {
+		auto sample_count = Frame::GetSamplesPerFrame(requested_frame, info.fps, info.sample_rate, info.channels);
+
 		// return empty frame
-		auto image_frame = std::make_shared<Frame>(
-			1, 640, 480, background_color, 0, 2);
+		auto image_frame = std::make_shared<Frame>(1, 640, 480, background_color, sample_count, info.channels);
 
 		// return frame object
 		return image_frame;
 	}
-
 }
 
 // Generate JSON string of this object
