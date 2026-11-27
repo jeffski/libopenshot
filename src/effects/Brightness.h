@@ -6,27 +6,9 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_BRIGHTNESS_EFFECT_H
 #define OPENSHOT_BRIGHTNESS_EFFECT_H
@@ -42,6 +24,10 @@
 
 namespace openshot
 {
+	enum BrightnessMaskMode {
+		BRIGHTNESS_MASK_LIMIT_TO_AREA = 0,
+		BRIGHTNESS_MASK_VARY_STRENGTH = 1
+	};
 
 	/**
 	 * @brief This class adjusts the brightness and contrast of an image, and can be animated
@@ -55,9 +41,17 @@ namespace openshot
 		/// Init effect settings
 		void init_effect_details();
 
+	protected:
+		bool UseCustomMaskBlend(int64_t frame_number) const override;
+		void ApplyCustomMaskBlend(std::shared_ptr<QImage> original_image, std::shared_ptr<QImage> effected_image,
+							  std::shared_ptr<QImage> mask_image, int64_t frame_number) const override;
+
 	public:
+		bool RendersOnVulkan() const override { return true; }
+		bool MaskDrivesAmount(int64_t frame_number) const override { return UseCustomMaskBlend(frame_number); }
 		Keyframe brightness;	///< Brightness keyframe. A constant value here will prevent animation.
 		Keyframe contrast;		///< Contrast keyframe.
+		int mask_mode;			///< Mask behavior mode for this effect.
 
 		/// Blank constructor, useful when using Json to load the effect properties
 		Brightness();

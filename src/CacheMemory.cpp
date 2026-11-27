@@ -6,30 +6,14 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "CacheMemory.h"
 #include "Exceptions.h"
+#include "Frame.h"
+#include "MemoryTrim.h"
 
 using namespace std;
 using namespace openshot;
@@ -53,86 +37,23 @@ CacheMemory::CacheMemory(int64_t max_bytes) : CacheBase(max_bytes) {
 // Default destructor
 CacheMemory::~CacheMemory()
 {
-	frames.clear();
-	frame_numbers.clear();
-	ordered_frame_numbers.clear();
+	Clear();
 
-	// remove critical section
-	delete cacheCriticalSection;
-	cacheCriticalSection = NULL;
-}
-
-
-// Calculate ranges of frames
-void CacheMemory::CalculateRanges() {
-	// Only calculate when something has changed
-	if (needs_range_processing) {
-
-		// Create a scoped lock, to protect the cache from multiple threads
-		const GenericScopedLock<CriticalSection> lock(*cacheCriticalSection);
-
-		// Sort ordered frame #s, and calculate JSON ranges
-		std::sort(ordered_frame_numbers.begin(), ordered_frame_numbers.end());
-
-		// Clear existing JSON variable
-		Json::Value ranges = Json::Value(Json::arrayValue);
-
-		// Increment range version
-		range_version++;
-
-		std::vector<int64_t>::iterator itr_ordered;
-		int64_t starting_frame = *ordered_frame_numbers.begin();
-		int64_t ending_frame = *ordered_frame_numbers.begin();
-
-		// Loop through all known frames (in sequential order)
-		for (itr_ordered = ordered_frame_numbers.begin(); itr_ordered != ordered_frame_numbers.end(); ++itr_ordered) {
-			int64_t frame_number = *itr_ordered;
-			if (frame_number - ending_frame > 1) {
-				// End of range detected
-				Json::Value range;
-
-				// Add JSON object with start/end attributes
-				// Use strings, since int64_ts are supported in JSON
-				range["start"] = std::to_string(starting_frame);
-				range["end"] = std::to_string(ending_frame);
-				ranges.append(range);
-
-				// Set new starting range
-				starting_frame = frame_number;
-			}
-
-			// Set current frame as end of range, and keep looping
-			ending_frame = frame_number;
-		}
-
-		// APPEND FINAL VALUE
-		Json::Value range;
-
-		// Add JSON object with start/end attributes
-		// Use strings, since int64_ts are not supported in JSON
-		range["start"] = std::to_string(starting_frame);
-		range["end"] = std::to_string(ending_frame);
-		ranges.append(range);
-
-		// Cache range JSON as string
-		json_ranges = ranges.toStyledString();
-
-		// Reset needs_range_processing
-		needs_range_processing = false;
-	}
+	// remove mutex
+	delete cacheMutex;
 }
 
 // Add a Frame to the cache
 void CacheMemory::Add(std::shared_ptr<Frame> frame)
 {
 	// Create a scoped lock, to protect the cache from multiple threads
-	const GenericScopedLock<CriticalSection> lock(*cacheCriticalSection);
+	const std::lock_guard<std::recursive_mutex> lock(*cacheMutex);
 	int64_t frame_number = frame->number;
 
 	// Freshen frame if it already exists
 	if (frames.count(frame_number))
 		// Move frame to front of queue
-		MoveToFront(frame_number);
+		Touch(frame_number);
 
 	else
 	{
@@ -147,11 +68,23 @@ void CacheMemory::Add(std::shared_ptr<Frame> frame)
 	}
 }
 
+// Check if frame is already contained in cache
+bool CacheMemory::Contains(int64_t frame_number) {
+	// Create a scoped lock, to protect the cache from multiple threads
+	const std::lock_guard<std::recursive_mutex> lock(*cacheMutex);
+
+	if (frames.count(frame_number) > 0) {
+		return true;
+	} else {
+		return false;
+	}
+}
+
 // Get a frame from the cache (or NULL shared_ptr if no frame is found)
 std::shared_ptr<Frame> CacheMemory::GetFrame(int64_t frame_number)
 {
 	// Create a scoped lock, to protect the cache from multiple threads
-	const GenericScopedLock<CriticalSection> lock(*cacheCriticalSection);
+	const std::lock_guard<std::recursive_mutex> lock(*cacheMutex);
 
 	// Does frame exists in cache?
 	if (frames.count(frame_number))
@@ -163,12 +96,28 @@ std::shared_ptr<Frame> CacheMemory::GetFrame(int64_t frame_number)
 		return std::shared_ptr<Frame>();
 }
 
+// @brief Get an array of all Frames
+std::vector<std::shared_ptr<openshot::Frame>> CacheMemory::GetFrames()
+{
+	// Create a scoped lock, to protect the cache from multiple threads
+	const std::lock_guard<std::recursive_mutex> lock(*cacheMutex);
+
+	std::vector<std::shared_ptr<openshot::Frame>> all_frames;
+	std::vector<int64_t>::iterator itr_ordered;
+	for(itr_ordered = ordered_frame_numbers.begin(); itr_ordered != ordered_frame_numbers.end(); ++itr_ordered)
+	{
+		int64_t frame_number = *itr_ordered;
+		all_frames.push_back(GetFrame(frame_number));
+	}
+
+	return all_frames;
+}
+
 // Get the smallest frame number (or NULL shared_ptr if no frame is found)
 std::shared_ptr<Frame> CacheMemory::GetSmallestFrame()
 {
 	// Create a scoped lock, to protect the cache from multiple threads
-	const GenericScopedLock<CriticalSection> lock(*cacheCriticalSection);
-	std::shared_ptr<openshot::Frame> f;
+	const std::lock_guard<std::recursive_mutex> lock(*cacheMutex);
 
 	// Loop through frame numbers
 	std::deque<int64_t>::iterator itr;
@@ -179,17 +128,19 @@ std::shared_ptr<Frame> CacheMemory::GetSmallestFrame()
 			smallest_frame = *itr;
 	}
 
-	// Return frame
-	f = GetFrame(smallest_frame);
-
-	return f;
+	// Return frame (if any)
+	if (smallest_frame != -1) {
+		return frames[smallest_frame];
+	} else {
+		return NULL;
+	}
 }
 
 // Gets the maximum bytes value
 int64_t CacheMemory::GetBytes()
 {
 	// Create a scoped lock, to protect the cache from multiple threads
-	const GenericScopedLock<CriticalSection> lock(*cacheCriticalSection);
+	const std::lock_guard<std::recursive_mutex> lock(*cacheMutex);
 
 	int64_t total_bytes = 0;
 
@@ -213,8 +164,7 @@ void CacheMemory::Remove(int64_t frame_number)
 void CacheMemory::Remove(int64_t start_frame_number, int64_t end_frame_number)
 {
 	// Create a scoped lock, to protect the cache from multiple threads
-	const GenericScopedLock<CriticalSection> lock(*cacheCriticalSection);
-
+	const std::lock_guard<std::recursive_mutex> lock(*cacheMutex);
 	// Loop through frame numbers
 	std::deque<int64_t>::iterator itr;
 	for(itr = frame_numbers.begin(); itr != frame_numbers.end();)
@@ -245,10 +195,10 @@ void CacheMemory::Remove(int64_t start_frame_number, int64_t end_frame_number)
 }
 
 // Move frame to front of queue (so it lasts longer)
-void CacheMemory::MoveToFront(int64_t frame_number)
+void CacheMemory::Touch(int64_t frame_number)
 {
 	// Create a scoped lock, to protect the cache from multiple threads
-	const GenericScopedLock<CriticalSection> lock(*cacheCriticalSection);
+	const std::lock_guard<std::recursive_mutex> lock(*cacheMutex);
 
 	// Does frame exists in cache?
 	if (frames.count(frame_number))
@@ -274,19 +224,23 @@ void CacheMemory::MoveToFront(int64_t frame_number)
 void CacheMemory::Clear()
 {
 	// Create a scoped lock, to protect the cache from multiple threads
-	const GenericScopedLock<CriticalSection> lock(*cacheCriticalSection);
+	const std::lock_guard<std::recursive_mutex> lock(*cacheMutex);
 
 	frames.clear();
 	frame_numbers.clear();
+	frame_numbers.shrink_to_fit();
 	ordered_frame_numbers.clear();
+	ordered_frame_numbers.shrink_to_fit();
 	needs_range_processing = true;
+	// Trim freed arenas back to OS after large clears (debounced)
+	TrimMemoryToOS();
 }
 
 // Count the frames in the queue
 int64_t CacheMemory::Count()
 {
 	// Create a scoped lock, to protect the cache from multiple threads
-	const GenericScopedLock<CriticalSection> lock(*cacheCriticalSection);
+	const std::lock_guard<std::recursive_mutex> lock(*cacheMutex);
 
 	// Return the number of frames in the cache
 	return frames.size();
@@ -299,9 +253,21 @@ void CacheMemory::CleanUp()
 	if (max_bytes > 0)
 	{
 		// Create a scoped lock, to protect the cache from multiple threads
-		const GenericScopedLock<CriticalSection> lock(*cacheCriticalSection);
+		const std::lock_guard<std::recursive_mutex> lock(*cacheMutex);
 
-		while (GetBytes() > max_bytes && frame_numbers.size() > 20)
+		size_t retained_frames = 20;
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+		// A CPU-oriented twenty-frame floor can pin gigabytes of GPU memory
+		// across reader, mapper and timeline caches. Honor byte budgets for
+		// caches holding hardware surfaces while retaining the newest frame.
+		for (const auto& entry : frames) {
+			if (entry.second->GetDeferredImage()) {
+				retained_frames = 1;
+				break;
+			}
+		}
+#endif
+		while (GetBytes() > max_bytes && frame_numbers.size() > retained_frames)
 		{
 			// Get the oldest frame number.
 			int64_t frame_to_remove = frame_numbers.back();

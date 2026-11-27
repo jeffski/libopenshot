@@ -7,27 +7,9 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_TRACKEDOBJECTBBOX_H
 #define OPENSHOT_TRACKEDOBJECTBBOX_H
@@ -42,6 +24,15 @@
 
 namespace openshot
 {
+	struct ObjectMaskData
+	{
+		int width = 0;
+		int height = 0;
+		std::vector<uint32_t> rle;
+
+		bool HasData() const { return width > 0 && height > 0 && !rle.empty(); }
+	};
+
 	/**
 	 * @brief This struct holds the information of a bounding-box.
 	 *
@@ -50,7 +41,7 @@ namespace openshot
 	 *
 	 * The bounding-box structure holds five floating-point properties:
 	 * the x and y coordinates of the rectangle's center point (cx, cy),
-	 * the rectangle's width, height and rotation.
+	 * the rectangle's width, height and source rotation.
 	 */
 	struct BBox
 	{
@@ -138,7 +129,7 @@ namespace openshot
 	 * and functions to manipulate it.
 	 *
 	 * The bounding-box displacement in X and Y directions, it's width,
-	 * height and rotation variation over the frames are set as
+	 * and height variation over the frames are set as
 	 * openshot::Keyframe objects.
 	 *
 	 * The bounding-box information over the clip's frames are
@@ -153,17 +144,19 @@ namespace openshot
 
 	public:
 		std::map<double, BBox> BoxVec; ///< Index the bounding-box by time of each frame
+		std::map<double, ObjectMaskData> MaskVec; ///< Index optional object masks by time of each frame
 		Keyframe delta_x; ///< X-direction displacement Keyframe
 		Keyframe delta_y; ///< Y-direction displacement Keyframe
 		Keyframe scale_x; ///< X-direction scale Keyframe
 		Keyframe scale_y; ///< Y-direction scale Keyframe
-		Keyframe rotation; ///< Rotation Keyframe
 		Keyframe background_alpha; ///< Background box opacity
 		Keyframe background_corner; ///< Radius of rounded corners
+		Keyframe mask_alpha; ///< Object mask overlay opacity
 		Keyframe stroke_width; ///< Thickness of border line
 		Keyframe stroke_alpha; ///< Stroke box opacity
 		Color stroke; ///< Border line color
 		Color background; ///< Background fill color
+		Color mask_color; ///< Object mask overlay color
 
 		std::string protobufDataPath; ///< Path to the protobuf file that holds the bounding box points across the frames
 
@@ -173,6 +166,10 @@ namespace openshot
 
 		/// Add a BBox to the BoxVec map
 		void AddBox(int64_t _frame_num, float _cx, float _cy, float _width, float _height, float _angle) override;
+		void AddMask(int64_t frame_num, const ObjectMaskData& mask);
+		bool HasMask(int64_t frame_number, int64_t max_frame_gap = 0) const;
+		bool HasMaskData() const;
+		ObjectMaskData GetMask(int64_t frame_number, int64_t max_frame_gap = 0) const;
 
 		/// Update object's BaseFps
 		void SetBaseFPS(Fraction fps);
@@ -202,6 +199,9 @@ namespace openshot
 			return const_cast<TrackedObjectBBox *>(this)->GetBox(frame_number);
 		}
 
+		/// Return stroke width adjusted for source-to-output raster scaling
+		double ScaledStrokeWidth(int64_t frame_number, int image_width, int image_height) const;
+
 		/// Load the bounding-boxes information from the protobuf file
 		bool LoadBoxData(std::string inputFilePath);
 
@@ -229,9 +229,6 @@ namespace openshot
 
 		/// Return a map that contains the bounding box properties and it's keyframes indexed by their names
 		std::map<std::string, float> GetBoxValues(int64_t frame_number) const override;
-		/// Return a map that contains the properties of this object's parent clip
-		std::map<std::string, float> GetParentClipProperties(int64_t frame_number) const override;
-
 	};
 } // namespace openshot
 

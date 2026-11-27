@@ -1,47 +1,25 @@
 /**
  * @file
  * @brief Source file for Echo audio effect class
- * @author 
+ * @author
  *
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "Echo.h"
 #include "Exceptions.h"
+#include "Frame.h"
 
 using namespace openshot;
 
-/// Blank constructor, useful when using Json to load the effect properties
-Echo::Echo() : echo_time(0.1), feedback(0.5), mix(0.5) {
-	// Init effect properties
-	init_effect_details();
-}
+Echo::Echo() : Echo::Echo(0.1, 0.5, 0.5) { }
 
-// Default constructor
-Echo::Echo(Keyframe new_echo_time, Keyframe new_feedback, Keyframe new_mix) : 
-			 echo_time(new_echo_time), feedback(new_feedback), mix(new_mix)
+Echo::Echo(Keyframe echo_time, Keyframe feedback, Keyframe mix) :
+	echo_time(echo_time), feedback(feedback), mix(mix)
 {
 	// Init effect properties
 	init_effect_details();
@@ -94,33 +72,33 @@ std::shared_ptr<openshot::Frame> Echo::GetFrame(std::shared_ptr<openshot::Frame>
 	for (int channel = 0; channel < frame->audio->getNumChannels(); channel++)
 	{
 		float *channel_data = frame->audio->getWritePointer(channel);
-        float *echo_data = echo_buffer.getWritePointer(channel);
-        local_write_position = echo_write_position;
+		float *echo_data = echo_buffer.getWritePointer(channel);
+		local_write_position = echo_write_position;
 
 		for (auto sample = 0; sample < frame->audio->getNumSamples(); ++sample)
 		{
 			const float in = (float)(channel_data[sample]);
-            float out = 0.0f;
+			float out = 0.0f;
 
-            float read_position = fmodf((float)local_write_position - echo_time_value + (float)echo_buffer_samples, echo_buffer_samples);
-            int local_read_position = floorf(read_position);
+			float read_position = fmodf((float)local_write_position - echo_time_value + (float)echo_buffer_samples, echo_buffer_samples);
+			int local_read_position = floorf(read_position);
 
-            if (local_read_position != local_write_position) 
+			if (local_read_position != local_write_position)
 			{
-                float fraction = read_position - (float)local_read_position;
-                float echoed1 = echo_data[(local_read_position + 0)];
-                float echoed2 = echo_data[(local_read_position + 1) % echo_buffer_samples];
-                out = (float)(echoed1 + fraction * (echoed2 - echoed1));
-                channel_data[sample] = in + mix_value*(out - in);
+				float fraction = read_position - (float)local_read_position;
+				float echoed1 = echo_data[(local_read_position + 0)];
+				float echoed2 = echo_data[(local_read_position + 1) % echo_buffer_samples];
+				out = (float)(echoed1 + fraction * (echoed2 - echoed1));
+				channel_data[sample] = in + mix_value*(out - in);
 				echo_data[local_write_position] = in + out*feedback_value;
-            }
+			}
 
-            if (++local_write_position >= echo_buffer_samples)
-                local_write_position -= echo_buffer_samples;
+			if (++local_write_position >= echo_buffer_samples)
+				local_write_position -= echo_buffer_samples;
 		}
 	}
 
-    echo_write_position = local_write_position;
+	echo_write_position = local_write_position;
 
 	// return the modified frame
 	return frame;
@@ -183,12 +161,7 @@ void Echo::SetJsonValue(const Json::Value root) {
 std::string Echo::PropertiesJSON(int64_t requested_frame) const {
 
 	// Generate JSON properties list
-	Json::Value root;
-	root["id"] = add_property_json("ID", 0.0, "string", Id(), NULL, -1, -1, true, requested_frame);
-	root["layer"] = add_property_json("Track", Layer(), "int", "", NULL, 0, 20, false, requested_frame);
-	root["start"] = add_property_json("Start", Start(), "float", "", NULL, 0, 1000 * 60 * 30, false, requested_frame);
-	root["end"] = add_property_json("End", End(), "float", "", NULL, 0, 1000 * 60 * 30, false, requested_frame);
-	root["duration"] = add_property_json("Duration", Duration(), "float", "", NULL, 0, 1000 * 60 * 30, true, requested_frame);
+	Json::Value root = BasePropertiesJSON(requested_frame);
 
 	// Keyframes
 	root["echo_time"] = add_property_json("Time", echo_time.GetValue(requested_frame), "float", "", &echo_time, 0, 5, false, requested_frame);

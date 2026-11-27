@@ -7,27 +7,9 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_TRACKEDOBJECTBASE_H
 #define OPENSHOT_TRACKEDOBJECTBASE_H
@@ -40,8 +22,8 @@
 
 namespace openshot {
 
-    // Forward decls
-    class ClipBase;
+	// Forward decls
+	class ClipBase;
 
 	/**
 	 * @brief This abstract class is the base class of all Tracked Objects.
@@ -53,14 +35,21 @@ namespace openshot {
 	class TrackedObjectBase {
 	protected:
 		std::string id;
-		std::string childClipId;
-
 		ClipBase* parentClip;
 
 	public:
 
+	    /// Keyframe to track if a box is visible in the current frame (read-only)
 		Keyframe visible;
+
+	    /// Keyframe to determine if a specific box is drawn (or hidden)
 		Keyframe draw_box;
+
+	    /// Keyframe to determine if a specific object label is drawn (or hidden)
+		Keyframe draw_text;
+
+	    /// Keyframe to determine if a specific object mask is drawn (when mask data exists)
+		Keyframe draw_mask;
 
 		/// Default constructor
 		TrackedObjectBase();
@@ -68,8 +57,8 @@ namespace openshot {
 		/// Constructor which takes an object ID
 		TrackedObjectBase(std::string _id);
 
-        /// Destructor
-        virtual ~TrackedObjectBase() = default;
+		/// Destructor
+		virtual ~TrackedObjectBase() = default;
 
 		/// Get the id of this object
 		std::string Id() const { return id; }
@@ -78,19 +67,14 @@ namespace openshot {
 		/// Get and set the parentClip of this object
 		ClipBase* ParentClip() const { return parentClip; }
 		void ParentClip(ClipBase* clip) { parentClip = clip; }
-		/// Get and set the Id of the childClip of this object
-		std::string ChildClipId() const { return childClipId; };
-		void ChildClipId(std::string _childClipId) { childClipId = _childClipId; };
 
 		/// Check if there is data for the exact frame number
 		virtual bool ExactlyContains(int64_t frame_number) const { return {}; };
 
 		/// Scale an object's property
 		virtual void ScalePoints(double scale) { return; };
-		/// Return the main properties of a TrackedObjectBBox instance - such as position, size and rotation
+		/// Return the main properties of a tracked object instance, such as position and size
 		virtual std::map<std::string, float> GetBoxValues(int64_t frame_number) const { std::map<std::string, float> ret; return ret; };
-		/// Return the main properties of the tracked object's parent clip - such as position, size and rotation
-		virtual std::map<std::string, float> GetParentClipProperties(int64_t frame_number) const { std::map<std::string, float> ret; return ret; }
 		/// Add a bounding box to the tracked object's BoxVec map
 		virtual void AddBox(int64_t _frame_num, float _cx, float _cy, float _width, float _height, float _angle) { return; };
 

@@ -6,27 +6,9 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_SETTINGS_H
 #define OPENSHOT_SETTINGS_H
@@ -64,6 +46,15 @@ namespace openshot {
 		/// Private variable to keep track of singleton instance
 		static Settings * m_pInstance;
 
+		/// Last OMP thread count applied to the OpenMP runtime
+		int applied_omp_threads = 0;
+
+		/// Machine default OpenMP thread count detected at startup
+		int default_omp_threads = 2;
+
+		/// Machine default FFmpeg thread count detected at startup
+		int default_ff_threads = 2;
+
 	public:
 		/**
 		 * @brief Use video codec for faster video decoding (if supported)
@@ -82,14 +73,17 @@ namespace openshot {
 		/// Scale mode used in FFmpeg decoding and encoding (used as an optimization for faster previews)
 		bool HIGH_QUALITY_SCALING = false;
 
-		/// Number of threads of OpenMP
-		int OMP_THREADS = 12;
+		/// Number of OpenMP threads
+		int OMP_THREADS = 2;
 
-		/// Number of threads that ffmpeg uses
-		int FF_THREADS = 8;
+			/// Number of threads that ffmpeg uses
+			int FF_THREADS = 16;
 
-		/// Maximum rows that hardware decode can handle
-		int DE_LIMIT_HEIGHT_MAX = 1100;
+			/// Minimum number of frames for frame-count-based caches
+			int CACHE_MIN_FRAMES = 24;
+
+			/// Maximum rows that hardware decode can handle
+			int DE_LIMIT_HEIGHT_MAX = 1100;
 
 		/// Maximum columns that hardware decode can handle
 		int DE_LIMIT_WIDTH_MAX = 1950;
@@ -100,15 +94,51 @@ namespace openshot {
 		/// Which GPU to use to encode (0 is the first)
 		int HW_EN_DEVICE_SET = 0;
 
+		/// Percentage of cache in front of the playhead (0.0 to 1.0)
+		float VIDEO_CACHE_PERCENT_AHEAD = 0.7;
+
+		/// Minimum number of frames to cache before playback begins
+		int VIDEO_CACHE_MIN_PREROLL_FRAMES = 30;
+
+		/// Max number of frames (ahead of playhead) to cache during playback
+		int VIDEO_CACHE_MAX_PREROLL_FRAMES = 60;
+
+		/// Max number of frames (when paused) to cache for playback
+		int VIDEO_CACHE_MAX_FRAMES = 30 * 10;
+
+		/// Enable/Disable the cache thread to pre-fetch and cache video frames before we need them
+		bool ENABLE_PLAYBACK_CACHING = true;
+
 		/// The audio device name to use during playback
 		std::string PLAYBACK_AUDIO_DEVICE_NAME = "";
+
+		/// The device type for the playback audio devices
+		std::string PLAYBACK_AUDIO_DEVICE_TYPE = "";
+
+		/// Size of playback buffer before audio playback starts
+		int PLAYBACK_AUDIO_BUFFER_SIZE = 512;
 
 		/// The current install path of OpenShot (needs to be set when using Timeline(path), since certain
 		/// paths depend on the location of OpenShot transitions and files)
 		std::string PATH_OPENSHOT_INSTALL = "";
 
- 		/// Whether to dump ZeroMQ debug messages to stderr
+		/// Legacy native debug-to-stderr switch (explicit Logger levels take precedence)
 		bool DEBUG_TO_STDERR = false;
+
+		/// Return the effective OpenMP worker budget used by libopenshot heuristics
+		int EffectiveOMPThreads() const;
+
+		/// Return the maximum allowed thread override based on this machine
+		int MaxAllowedThreads() const;
+
+		/// Return the machine default OpenMP thread count detected at startup
+		int DefaultOMPThreads() const { return default_omp_threads; }
+
+		/// Return the machine default FFmpeg thread count detected at startup
+		int DefaultFFThreads() const { return default_ff_threads; }
+
+		/// Apply any explicit OpenMP thread override to the runtime
+		void ApplyOpenMPSettings();
 
 		/// Create or get an instance of this logger singleton (invoke the class with this method)
 		static Settings * Instance();

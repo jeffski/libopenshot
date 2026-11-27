@@ -7,37 +7,24 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
+#include "QtPlayer.h"
+
+#include "AudioDevices.h"
 #include "Clip.h"
 #include "FFmpegReader.h"
 #include "Timeline.h"
-#include "QtPlayer.h"
 #include "Qt/PlayerPrivate.h"
 #include "Qt/VideoRenderer.h"
 
 namespace openshot
 {
+
+    using AudioDeviceList = std::vector<std::pair<std::string, std::string>>;
+
     // Delegating constructor
     QtPlayer::QtPlayer()
     : QtPlayer::QtPlayer(new VideoRenderer())
@@ -69,20 +56,44 @@ namespace openshot
     // Return any error string during initialization
     std::string QtPlayer::GetError() {
     	if (reader && threads_started) {
-    		// Get error from audio thread (if any)
     		return p->audioPlayback->getError();
     	} else {
     		return "";
     	}
     }
 
-    /// Get Audio Devices from JUCE
-    std::vector<openshot::AudioDeviceInfo> QtPlayer::GetAudioDeviceNames() {
-    	if (reader && threads_started) {
-    		return p->audioPlayback->getAudioDeviceNames();
-    	} else {
-    		return std::vector<openshot::AudioDeviceInfo>();
-    	}
+    // Return the default audio sample rate (from the system)
+    double QtPlayer::GetDefaultSampleRate() {
+        if (reader && threads_started) {
+            return p->audioPlayback->getDefaultSampleRate();
+        } else {
+            return 0;
+        }
+    }
+
+    /// Get vector of audio device names & types
+    AudioDeviceList QtPlayer::GetAudioDeviceNames() {
+        AudioDevices devs;
+        return devs.getNames();
+    }
+
+    // Get current open audio device (empty if initialization failed)
+    AudioDeviceInfo QtPlayer::GetCurrentAudioDevice() {
+        return p->audioPlayback->getCurrentAudioDevice();
+    }
+
+    // Set the source JSON of an openshot::Timelime
+    void QtPlayer::SetTimelineSource(const std::string &json) {
+        // Create timeline instance (720p, since we have no re-scaling in this player yet)
+        reader = new Timeline(1280, 720, openshot::Fraction(30, 1), 44100, 2, openshot::LAYOUT_STEREO);
+
+        Timeline* tm = (Timeline*)reader;
+        tm->SetJson(json);
+        tm->DisplayInfo();
+        tm->Open();
+
+        // Set the reader
+        Reader(reader);
     }
 
     void QtPlayer::SetSource(const std::string &source)
@@ -125,6 +136,7 @@ namespace openshot
 
     	if (reader && !threads_started) {
     		// Start thread only once
+            p->audioPlayback->Play();
     		p->startPlayback();
     		threads_started = true;
     	}
@@ -154,19 +166,21 @@ namespace openshot
 
     void QtPlayer::Seek(int64_t new_frame)
     {
+        Seek(new_frame, true);
+    }
+
+    void QtPlayer::Seek(int64_t new_frame, bool start_preroll)
+    {
     	// Check for seek
     	if (reader && threads_started && new_frame > 0) {
     		// Notify cache thread that seek has occurred
-    		p->videoCache->Seek(new_frame);
+    		p->videoCache->Seek(new_frame, start_preroll);
+
+            // Notify audio thread that seek has occurred
+            p->audioPlayback->Seek(new_frame);
 
     		// Update current position
-    		p->video_position = new_frame;
-
-    		// Clear last position (to force refresh)
-    		p->last_video_position = 0;
-
-    		// Notify audio thread that seek has occurred
-    		p->audioPlayback->Seek(new_frame);
+    		p->Seek(new_frame);
     	}
     }
 
@@ -191,11 +205,25 @@ namespace openshot
     // Set the reader object
     void QtPlayer::Reader(openshot::ReaderBase *new_reader)
     {
-    	// Set new reader. Note: Be sure to close and dispose of the old reader after calling this
+        // ReaderBase is caller-owned. Drain every old-reader user before the
+        // caller may close/delete it after this method returns.
+        const bool restart = threads_started;
+        p->stopPlayback();
+        threads_started = false;
+        // Release every reference/event associated with the old reader before
+        // restarting, including a paused same-position preview.
+        p->Seek(p->video_position.load());
+        p->videoPlayback->SetFrame({});
+        p->videoPlayback->render.reset();
+        p->videoPlayback->rendered.reset();
     	reader = new_reader;
     	p->reader = new_reader;
     	p->videoCache->Reader(new_reader);
     	p->audioPlayback->Reader(new_reader);
+        if (restart && new_reader) {
+            p->startPlayback();
+            threads_started = true;
+        }
     }
 
     // Get the current reader, such as a FFmpegReader
@@ -203,15 +231,22 @@ namespace openshot
     	return reader;
     }
 
-    // Set the QWidget pointer to display the video on (as a LONG pointer id)
-    void QtPlayer::SetQWidget(int64_t qwidget_address) {
+    // Set the QWidget pointer to display the video on (as a pointer-sized unsigned id)
+    void QtPlayer::SetQWidget(uintptr_t qwidget_address) {
     	// Update override QWidget address on the video renderer
     	p->renderer->OverrideWidget(qwidget_address);
     }
 
-    // Get the Renderer pointer address (for Python to cast back into a QObject)
-    int64_t QtPlayer::GetRendererQObject() {
-    	return (int64_t)(VideoRenderer*)p->renderer;
+    // Set the QWidget pointer to display the video on (using a real QWidget pointer)
+    void QtPlayer::SetQWidget(QWidget *widget) {
+    	SetQWidget(reinterpret_cast<uintptr_t>(widget));
+    }
+
+    // Get the Renderer pointer address (for Python to cast back into a VideoRenderer)
+	uintptr_t QtPlayer::GetRendererQObject() {
+    	auto* vr = static_cast<VideoRenderer*>(p->renderer);
+        uintptr_t addr = reinterpret_cast<uintptr_t>(vr);
+    	return addr;
     }
 
     // Get the Playback speed
@@ -224,8 +259,9 @@ namespace openshot
     	speed = new_speed;
     	p->speed = new_speed;
     	p->videoCache->setSpeed(new_speed);
-    	if (p->reader->info.has_audio)
-    		p->audioPlayback->setSpeed(new_speed);
+    	if (p->reader && p->reader->info.has_audio) {
+            p->audioPlayback->setSpeed(new_speed);
+    	}
     }
 
     // Get the Volume
@@ -238,3 +274,9 @@ namespace openshot
     	volume = new_volume;
     }
 }
+#ifdef __ANDROID__
+#include <android/log.h>
+#ifndef ANDROID_LOG_WARN
+#define ANDROID_LOG_WARN 5
+#endif
+#endif

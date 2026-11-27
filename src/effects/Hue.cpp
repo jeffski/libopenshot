@@ -6,30 +6,18 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "Hue.h"
 #include "Exceptions.h"
+
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+#include "VulkanCompositor.h"
+#include "VulkanFrameImage.h"
+#include "Logger.h"
+#endif
 
 using namespace openshot;
 
@@ -40,7 +28,7 @@ Hue::Hue() : Hue(0.0) {
 }
 
 // Default constructor
-Hue::Hue(Keyframe hue): hue(hue)
+Hue::Hue(Keyframe hue): hue(hue), mask_mode(HUE_MASK_LIMIT_TO_AREA)
 {
 	// Init effect properties
 	init_effect_details();
@@ -64,11 +52,6 @@ void Hue::init_effect_details()
 // modified openshot::Frame object
 std::shared_ptr<openshot::Frame> Hue::GetFrame(std::shared_ptr<openshot::Frame> frame, int64_t frame_number)
 {
-	// Get the frame's image
-	std::shared_ptr<QImage> frame_image = frame->GetImage();
-
-	int pixel_count = frame_image->width() * frame_image->height();
-
 	// Get the current hue percentage shift amount, and convert to degrees
 	double degrees = 360.0 * hue.GetValue(frame_number);
 	float cosA = cos(degrees*3.14159265f/180);
@@ -81,25 +64,96 @@ std::shared_ptr<openshot::Frame> Hue::GetFrame(std::shared_ptr<openshot::Frame> 
 		1.0f/3.0f * (1.0f - cosA) + sqrtf(1.0f/3.0f) * sinA
 	};
 
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+    if (VulkanRenderingEnabled()) {
+        try {
+            auto surface = frame->GetDeferredImage();
+            if (!surface && ParentClip() && frame->has_image_data)
+                surface = UploadVulkanImage(*frame->GetImage());
+            if (surface) {
+                frame->AddDeferredImage(HueVulkanImage(surface, {matrix[0], matrix[1], matrix[2]}));
+                return frame;
+            }
+        } catch (const std::exception& error) {
+            Logger::Instance()->Log(std::string("Vulkan hue CPU fallback: ") + error.what());
+        }
+    }
+#endif
+	// Get the frame's image
+	std::shared_ptr<QImage> frame_image = frame->GetImage();
+
+	int pixel_count = frame_image->width() * frame_image->height();
+
 	// Loop through pixels
 	unsigned char *pixels = (unsigned char *) frame_image->bits();
 
 	#pragma omp parallel for shared (pixels)
 	for (int pixel = 0; pixel < pixel_count; ++pixel)
 	{
-		// Get the RGB values from the pixel (ignore the alpha channel)
-		int R = pixels[pixel * 4];
-		int G = pixels[pixel * 4 + 1];
-		int B = pixels[pixel * 4 + 2];
+		// Calculate alpha % (to be used for removing pre-multiplied alpha value)
+		int A = pixels[pixel * 4 + 3];
+        // Transparent premultiplied pixels have no color to rotate.
+        if (A == 0) {
+            pixels[pixel * 4] = pixels[pixel * 4 + 1] = pixels[pixel * 4 + 2] = 0;
+            continue;
+        }
+		float alpha_percent = A / 255.0;
+
+		// Get RGB values, and remove pre-multiplied alpha
+		int R = pixels[pixel * 4 + 0] / alpha_percent;
+		int G = pixels[pixel * 4 + 1] / alpha_percent;
+		int B = pixels[pixel * 4 + 2] / alpha_percent;
 
 		// Multiply each color by the hue rotation matrix
 		pixels[pixel * 4] = constrain(R * matrix[0] + G * matrix[1] + B * matrix[2]);
 		pixels[pixel * 4 + 1] = constrain(R * matrix[2] + G * matrix[0] + B * matrix[1]);
 		pixels[pixel * 4 + 2] = constrain(R * matrix[1] + G * matrix[2] + B * matrix[0]);
+
+		// Pre-multiply the alpha back into the color channels
+		pixels[pixel * 4 + 0] *= alpha_percent;
+		pixels[pixel * 4 + 1] *= alpha_percent;
+		pixels[pixel * 4 + 2] *= alpha_percent;
 	}
 
 	// return the modified frame
 	return frame;
+}
+
+bool Hue::UseCustomMaskBlend(int64_t frame_number) const {
+	(void) frame_number;
+	return mask_mode == HUE_MASK_VARY_STRENGTH;
+}
+
+void Hue::ApplyCustomMaskBlend(std::shared_ptr<QImage> original_image, std::shared_ptr<QImage> effected_image,
+							   std::shared_ptr<QImage> mask_image, int64_t frame_number) const {
+	(void) frame_number;
+	if (!original_image || !effected_image || !mask_image)
+		return;
+	if (original_image->size() != effected_image->size() || effected_image->size() != mask_image->size())
+		return;
+
+	unsigned char* original_pixels = reinterpret_cast<unsigned char*>(original_image->bits());
+	unsigned char* effected_pixels = reinterpret_cast<unsigned char*>(effected_image->bits());
+	unsigned char* mask_pixels = reinterpret_cast<unsigned char*>(mask_image->bits());
+	const int pixel_count = effected_image->width() * effected_image->height();
+
+	#pragma omp parallel for schedule(static)
+	for (int i = 0; i < pixel_count; ++i) {
+		const int idx = i * 4;
+		float factor = static_cast<float>(qGray(mask_pixels[idx], mask_pixels[idx + 1], mask_pixels[idx + 2])) / 255.0f;
+		if (mask_invert)
+			factor = 1.0f - factor;
+		factor = factor * factor;
+		const float inverse = 1.0f - factor;
+
+		effected_pixels[idx] = static_cast<unsigned char>(
+			(original_pixels[idx] * inverse) + (effected_pixels[idx] * factor));
+		effected_pixels[idx + 1] = static_cast<unsigned char>(
+			(original_pixels[idx + 1] * inverse) + (effected_pixels[idx + 1] * factor));
+		effected_pixels[idx + 2] = static_cast<unsigned char>(
+			(original_pixels[idx + 2] * inverse) + (effected_pixels[idx + 2] * factor));
+		effected_pixels[idx + 3] = original_pixels[idx + 3];
+	}
 }
 
 // Generate JSON string of this object
@@ -116,6 +170,7 @@ Json::Value Hue::JsonValue() const {
 	Json::Value root = EffectBase::JsonValue(); // get parent properties
 	root["type"] = info.class_name;
 	root["hue"] = hue.JsonValue();
+	root["mask_mode"] = mask_mode;
 
 	// return JsonValue
 	return root;
@@ -147,25 +202,21 @@ void Hue::SetJsonValue(const Json::Value root) {
 	// Set data from Json (if key is found)
 	if (!root["hue"].isNull())
 		hue.SetJsonValue(root["hue"]);
+	if (!root["mask_mode"].isNull())
+		mask_mode = root["mask_mode"].asInt();
 }
 
 // Get all properties for a specific frame
 std::string Hue::PropertiesJSON(int64_t requested_frame) const {
 
 	// Generate JSON properties list
-	Json::Value root;
-	root["id"] = add_property_json("ID", 0.0, "string", Id(), NULL, -1, -1, true, requested_frame);
-	root["position"] = add_property_json("Position", Position(), "float", "", NULL, 0, 1000 * 60 * 30, false, requested_frame);
-	root["layer"] = add_property_json("Track", Layer(), "int", "", NULL, 0, 20, false, requested_frame);
-	root["start"] = add_property_json("Start", Start(), "float", "", NULL, 0, 1000 * 60 * 30, false, requested_frame);
-	root["end"] = add_property_json("End", End(), "float", "", NULL, 0, 1000 * 60 * 30, false, requested_frame);
-	root["duration"] = add_property_json("Duration", Duration(), "float", "", NULL, 0, 1000 * 60 * 30, true, requested_frame);
+	Json::Value root = BasePropertiesJSON(requested_frame);
 
 	// Keyframes
 	root["hue"] = add_property_json("Hue", hue.GetValue(requested_frame), "float", "", &hue, 0.0, 1.0, false, requested_frame);
-
-	// Set the parent effect which properties this effect will inherit
-	root["parent_effect_id"] = add_property_json("Parent", 0.0, "string", info.parent_effect_id, NULL, -1, -1, false, requested_frame);
+	root["mask_mode"] = add_property_json("Mask Mode", mask_mode, "int", "", NULL, 0, 1, false, requested_frame);
+	root["mask_mode"]["choices"].append(add_property_choice_json("Limit to Mask", HUE_MASK_LIMIT_TO_AREA, mask_mode));
+	root["mask_mode"]["choices"].append(add_property_choice_json("Vary Strength", HUE_MASK_VARY_STRENGTH, mask_mode));
 
 	// Return formatted string
 	return root.toStyledString();

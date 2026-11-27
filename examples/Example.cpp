@@ -1,90 +1,128 @@
 /**
  * @file
- * @brief Source file for Example Executable (example app for libopenshot)
+ * @brief Example application showing how to attach VideoCacheThread to an FFmpegReader
  * @author Jonathan Thomas <jonathan@openshot.org>
  *
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2025 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
-#include <fstream>
+#include <chrono>
 #include <iostream>
 #include <memory>
+#include <string>
 #include "Clip.h"
 #include "Frame.h"
 #include "FFmpegReader.h"
+#include "Settings.h"
 #include "Timeline.h"
 
 using namespace openshot;
 
-
 int main(int argc, char* argv[]) {
+    using clock = std::chrono::high_resolution_clock;
+    auto total_start = clock::now();
 
-    // Types for storing time durations in whole and fractional milliseconds
-    using ms = std::chrono::milliseconds;
-    using s = std::chrono::seconds;
-    using double_ms = std::chrono::duration<double, ms::period>;
+    const std::string output_dir = "/home/jonathan/Downloads";
+    const std::string input_paths[] = {
+        "/home/jonathan/Videos/3.4 Release/Screencasts/Timing.mp4",
+        "/home/jonathan/Downloads/openshot-testing/sintel_trailer-720p.mp4"
+    };
+    const int64_t frames_to_fetch[] = {175, 225, 240, 500, 1000};
+    const bool use_hw_decode = false;
 
-    // FFmpeg Reader performance test
-    const auto total_1 = std::chrono::high_resolution_clock::now();
-    FFmpegReader r9("/home/jonathan/Videos/sintel_trailer-1080p.mp4");
-    r9.Open();
-    for (long int frame = 1; frame <= 1000; frame++)
-    {
-        const auto time1 = std::chrono::high_resolution_clock::now();
-        std::shared_ptr<Frame> f = r9.GetFrame(frame);
-        const auto time2 = std::chrono::high_resolution_clock::now();
-        std::cout << "FFmpegReader: " << frame
-                  << " (" << double_ms(time2 - time1).count() << " ms)\n";
+    std::cout << "Hardware decode: " << (use_hw_decode ? "ON" : "OFF") << "\n";
+    openshot::Settings::Instance()->HARDWARE_DECODER = use_hw_decode ? 1 : 0;
+
+    for (const std::string& input_path : input_paths) {
+        auto file_start = clock::now();
+        std::string base = input_path;
+        size_t slash = base.find_last_of('/');
+        if (slash != std::string::npos) {
+            base = base.substr(slash + 1);
+        }
+
+        std::cout << "\n=== File: " << base << " ===\n";
+
+        auto t0 = clock::now();
+        FFmpegReader reader(input_path.c_str());
+        auto t1 = clock::now();
+        std::cout << "FFmpegReader ctor: "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count()
+                  << " ms\n";
+
+        auto t2 = clock::now();
+        reader.Open();
+        auto t3 = clock::now();
+        std::cout << "FFmpegReader Open(): "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count()
+                  << " ms\n";
+
+        auto t4 = clock::now();
+        Timeline timeline(1920, 1080, Fraction(30, 1), reader.info.sample_rate, reader.info.channels, reader.info.channel_layout);
+        timeline.SetMaxSize(640, 480);
+        auto t5 = clock::now();
+        std::cout << "Timeline ctor (1080p30): "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(t5 - t4).count()
+                  << " ms\n";
+
+        auto t6 = clock::now();
+        Clip c1(&reader);
+        auto t7 = clock::now();
+        std::cout << "Clip ctor: "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(t7 - t6).count()
+                  << " ms\n";
+
+        timeline.AddClip(&c1);
+
+        auto t8 = clock::now();
+        timeline.Open();
+        auto t9 = clock::now();
+        std::cout << "Timeline Open(): "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(t9 - t8).count()
+                  << " ms\n";
+
+        for (int64_t frame_number : frames_to_fetch) {
+            auto loop_start = clock::now();
+            std::cout << "Requesting frame " << frame_number << "...\n";
+
+            auto t10 = clock::now();
+            std::shared_ptr<Frame> frame = timeline.GetFrame(frame_number);
+            auto t11 = clock::now();
+            std::cout << "Timeline GetFrame(" << frame_number << "): "
+                      << std::chrono::duration_cast<std::chrono::milliseconds>(t11 - t10).count()
+                      << " ms\n";
+
+            std::string out_path = output_dir + "/frame-" + base + "-" + std::to_string(frame_number) + ".jpg";
+
+            auto t12 = clock::now();
+            frame->Thumbnail(out_path, 200, 80, "", "", "#000000", false, "JPEG", 95, 0.0f);
+            auto t13 = clock::now();
+            std::cout << "Frame Thumbnail() JPEG (" << frame_number << "): "
+                      << std::chrono::duration_cast<std::chrono::milliseconds>(t13 - t12).count()
+                      << " ms\n";
+
+            auto loop_end = clock::now();
+            std::cout << "Frame loop total (" << frame_number << "): "
+                      << std::chrono::duration_cast<std::chrono::milliseconds>(loop_end - loop_start).count()
+                      << " ms\n";
+        }
+
+        reader.Close();
+        timeline.Close();
+
+        auto file_end = clock::now();
+        std::cout << "File total (" << base << "): "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(file_end - file_start).count()
+                  << " ms\n";
     }
-    const auto total_2 = std::chrono::high_resolution_clock::now();
-    auto total_sec = std::chrono::duration_cast<ms>(total_2 - total_1);
-    std::cout << "FFmpegReader TOTAL: " << total_sec.count() << " ms\n";
-    r9.Close();
 
-
-    // Timeline Reader performance test
-    Timeline tm(r9.info);
-    Clip *c = new Clip(&r9);
-    tm.AddClip(c);
-    tm.Open();
-
-    const auto total_3 = std::chrono::high_resolution_clock::now();
-    for (long int frame = 1; frame <= 1000; frame++)
-    {
-        const auto time1 = std::chrono::high_resolution_clock::now();
-        std::shared_ptr<Frame> f = tm.GetFrame(frame);
-        const auto time2 = std::chrono::high_resolution_clock::now();
-        std::cout << "Timeline: " << frame
-                  << " (" << double_ms(time2 - time1).count() << " ms)\n";
-    }
-    const auto total_4 = std::chrono::high_resolution_clock::now();
-    total_sec = std::chrono::duration_cast<ms>(total_4 - total_3);
-    std::cout << "Timeline TOTAL: " << total_sec.count() << " ms\n";
-    tm.Close();
-
-    std::cout << "Completed successfully!\n";
-
+    auto total_end = clock::now();
+    std::cout << "Total elapsed: "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(total_end - total_start).count()
+              << " ms\n";
     return 0;
 }

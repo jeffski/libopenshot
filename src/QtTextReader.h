@@ -8,42 +8,24 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_QT_TEXT_READER_H
 #define OPENSHOT_QT_TEXT_READER_H
 
 #include "ReaderBase.h"
 
-#include <cmath>
-#include <ctime>
-#include <iostream>
-#include <omp.h>
-#include <stdio.h>
+#include <atomic>
+#include <list>
 #include <memory>
-#include "CacheMemory.h"
+#include <string>
+#include <utility>
+
 #include "Enums.h"
 
+#include <QFont>
 
 class QImage;
 
@@ -51,6 +33,7 @@ namespace openshot
 {
 	// Forward decls
 	class CacheBase;
+	class Frame;
 
 	/**
 	 * @brief This class uses Qt libraries, to create frames with "Text", and return
@@ -90,6 +73,34 @@ namespace openshot
 	class QtTextReader : public ReaderBase
 	{
 	private:
+        // Opt-in document layout keeps existing readers' drawText behavior intact.
+        // These settings round-trip through JSON; sizes are pixels. Style names match
+        // the Caption effect where they mean the same thing (stroke, background_padding,
+        // background_corner, line_spacing). text_animation keyframes only the styles that
+        // keep the image size: color, background, stroke, border, stroke_width,
+        // border_width and background_corner.
+        Json::Value text_animation;
+        Json::Value rendered_style;
+        int64_t render_frame = 1;
+        double render_scale = 1.0; ///< Raster pixels per layout pixel
+        std::atomic<double> detail_scale{1.0}; ///< Part of render_scale a SCALE_NONE clip draws back down
+        double RasterScale(double& detail);
+        openshot::Fraction source_fps = openshot::Fraction(30, 1); ///< Frame rate that style curves are keyed to
+        /// Recently rendered animated styles, newest first (bounded by count and bytes)
+        std::list<std::pair<std::string, std::shared_ptr<QImage>>> render_cache;
+        std::shared_ptr<QImage> Render(const Json::Value& style);
+        void UseStyle(const Json::Value& style);
+        void UpdateInfo();
+        Json::Value EvaluateStyle(int64_t frame) const;
+        bool document_layout = false;
+        double background_padding = 12.0; ///< Space between the text and the box edge
+        double stroke_width = 0.0; ///< Text outline width
+        std::string stroke = "#000000"; ///< Text outline color
+        double border_width = 0.0; ///< Box border width
+        std::string border = "#ffffff"; ///< Box border color
+        double letter_spacing = 0.0; ///< Extra pixels between letters (negative tightens)
+        double line_spacing = 1.0; ///< Line height as a multiple of the font's (1 = normal)
+        double background_corner = 0.0; ///< Corner radius of the background and border
 		int width;
 		int height;
 		int x_offset;
@@ -119,6 +130,10 @@ namespace openshot
 		/// @param text_color The color of the text (valid values are a color string in \#RRGGBB or \#AARRGGBB notation or a CSS color name)
 		/// @param background_color The background color of the frame image (valid values are a color string in \#RRGGBB or \#AARRGGBB notation, a CSS color name, or 'transparent')
 		QtTextReader(int width, int height, int x_offset, int y_offset, GravityType gravity, std::string text, QFont font, std::string text_color, std::string background_color);
+
+		/// Extra raster detail rendered for a scaled-up SCALE_NONE clip. Clip
+		/// divides the image size by this, so it stays sharp without growing.
+		double DetailScale() const { return detail_scale; }
 
 		/// Draw a box under rendered text using the specified color.
 		/// @param color The background color behind the text (valid values are a color string in \#RRGGBB or \#AARRGGBB notation or a CSS color name)

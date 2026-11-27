@@ -6,51 +6,29 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_READER_BASE_H
 #define OPENSHOT_READER_BASE_H
 
-#include <iostream>
-#include <iomanip>
+#include <map>
 #include <memory>
-#include <cstdlib>
-#include <sstream>
-#include "CacheMemory.h"
+#include <mutex>
+#include <iostream>
+#include <string>
+#include <vector>
+
 #include "ChannelLayouts.h"
-#include "ClipBase.h"
 #include "Fraction.h"
-#include "Frame.h"
 #include "Json.h"
-#include "ZmqLogger.h"
-#include <QString>
-#include <QGraphicsItem>
-#include <QGraphicsScene>
-#include <QGraphicsPixmapItem>
-#include <QPixmap>
 
 namespace openshot
 {
+	class CacheBase;
+	class ClipBase;
+	class Frame;
 	/**
 	 * @brief This struct contains info about a media file, such as height, width, frames per second, etc...
 	 *
@@ -97,10 +75,12 @@ namespace openshot
 	class ReaderBase
 	{
 	protected:
-		/// Section lock for multiple threads
-		juce::CriticalSection getFrameCriticalSection;
-		juce::CriticalSection processingCriticalSection;
+		/// Mutex for multiple threads
+		std::recursive_mutex getFrameMutex;
 		openshot::ClipBase* clip; ///< Pointer to the parent clip instance (if any)
+		int max_decode_width; ///< Optional maximum decoded frame width (0 disables the limit)
+		int max_decode_height; ///< Optional maximum decoded frame height (0 disables the limit)
+		bool apply_orientation_metadata; ///< Apply source orientation metadata while reading frames
 
 	public:
 
@@ -116,11 +96,30 @@ namespace openshot
 		/// Set parent clip object of this reader
 		void ParentClip(openshot::ClipBase* new_clip);
 
+		/// Set an optional maximum decoded frame size. Use 0,0 to disable the limit.
+		/// Reduced FFmpeg previews align both dimensions to four pixels (minimum 4x4).
+		void SetMaxDecodeSize(int width, int height);
+
+		/// Return the current maximum decoded frame width (0 when unlimited).
+		int MaxDecodeWidth() const;
+
+		/// Return the current maximum decoded frame height (0 when unlimited).
+		int MaxDecodeHeight() const;
+
+		/// Return true when a maximum decoded frame size is active.
+		bool HasMaxDecodeSize() const;
+
+		/// Set whether readers should apply source orientation metadata to returned frames.
+		void ApplyOrientationMetadata(bool value);
+
+		/// Return whether readers apply source orientation metadata to returned frames.
+		bool ApplyOrientationMetadata() const;
+
 		/// Close the reader (and any resources it was consuming)
 		virtual void Close() = 0;
 
 		/// Display file information in the standard output stream (stdout)
-		void DisplayInfo();
+		void DisplayInfo(std::ostream* out=&std::cout);
 
 		/// Get the cache object used by this reader (note: not all readers use cache)
 		virtual openshot::CacheBase* GetCache() = 0;
@@ -135,6 +134,10 @@ namespace openshot
 
 		/// Determine if reader is open or closed
 		virtual bool IsOpen() = 0;
+
+		/// Return true if hardware decode successfully produced at least one frame.
+		/// Readers without hardware decode support should return false.
+		virtual bool HardwareDecodeSuccessful() const { return false; }
 
 		/// Return the type name of the class
 		virtual std::string Name() = 0;

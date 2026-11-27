@@ -6,31 +6,14 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include "CVTracker.h"
 #include "CVStabilization.h"
 #include "CVObjectDetection.h"
@@ -170,7 +153,7 @@ int main(int argc, char* argv[]) {
         objectDetection.SaveObjDetectedData();
 
         // Create a object detector effect
-        EffectBase* e = EffectInfo().CreateEffect("Object Detector");
+        EffectBase* e = EffectInfo().CreateEffect("ObjectDetection");
 
         // Pass a JSON string with the saved detections data
         // The effect will read and save the detections in a map::<frame,data_struct>
@@ -278,24 +261,21 @@ string objectDetectionJson(bool onlyProtoPath){
     string protobufDataPath = "example_object_detection.data";
     // Define processing device
     string processingDevice = "GPU";
-    // Set path to model configuration file
-    string modelConfiguration = "yolov3.cfg";
-    // Set path to model weights
-    string modelWeights = "yolov3.weights";
+    // Set path to YOLOv5 ONNX model
+    string model = "Yolo5/yolov5s.onnx";
     // Set path to class names file
-    string classesFile = "obj.names";
+    string classesFile = "Yolo5/obj.names";
 
     // Construct all the composition of the JSON string
     string protobuf_data_path = jsonFormat("protobuf_data_path", protobufDataPath);
     string processing_device = jsonFormat("processing_device", processingDevice);
-    string model_configuration = jsonFormat("model_configuration", modelConfiguration);
-    string model_weights = jsonFormat("model_weights", modelWeights);
+    string model_path = jsonFormat("model", model);
     string classes_file = jsonFormat("classes_file", classesFile);
 
     // Return only the the protobuf path in JSON format
     if(onlyProtoPath)
         return "{" + protobuf_data_path + "}";
     else
-        return "{" + protobuf_data_path + "," + processing_device + "," + model_configuration + ","
-                + model_weights + "," + classes_file + "}";
+        return "{" + protobuf_data_path + "," + processing_device + "," + model_path + ","
+                + classes_file + "}";
 }

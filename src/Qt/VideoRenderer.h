@@ -6,38 +6,35 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_VIDEO_RENDERER_H
 #define OPENSHOT_VIDEO_RENDERER_H
 
 #include "../RendererBase.h"
+#include <cstdint>
+#include <QtCore/QMetaObject>
 #include <QtCore/QObject>
 #include <QtGui/QImage>
 #include <memory>
+#include <atomic>
 
 
 class QPainter;
+class QWidget;
+
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+/// Implement on a native QWidget to receive retained frames on the GUI thread.
+/// The presenter owns presentation synchronization and may retain the frame.
+class FramePresenter {
+public:
+    virtual ~FramePresenter() = default;
+    virtual void PresentFrame(const std::shared_ptr<openshot::Frame>& frame) = 0;
+};
+Q_DECLARE_METATYPE(std::shared_ptr<openshot::Frame>)
+#endif
 
 class VideoRenderer : public QObject, public openshot::RendererBase
 {
@@ -48,19 +45,29 @@ public:
     ~VideoRenderer();
 
     /// Override QWidget which needs to be painted
-    void OverrideWidget(int64_t qwidget_address);
+    void OverrideWidget(uintptr_t qwidget_address);
 
 signals:
-	void present(const QImage &image);
+    void present(const QImage &image);
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+    void presentFrame(std::shared_ptr<openshot::Frame> frame);
+#endif
 
 protected:
     //void render(openshot::OSPixelFormat format, int width, int height, int bytesPerLine, unsigned char *data);
     void render(std::shared_ptr<QImage> image);
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+    void renderFrame(const std::shared_ptr<openshot::Frame>& frame) override;
+#endif
 
 private slots:
 
 private:
-	QWidget* override_widget;
+    QWidget* override_widget;
+    QMetaObject::Connection override_present_connection;
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+    std::atomic<bool> frame_presenter{false};
+#endif
 };
 
 #endif //OPENSHOT_VIDEO_RENDERER_H

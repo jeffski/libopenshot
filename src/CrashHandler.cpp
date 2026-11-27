@@ -6,29 +6,15 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "CrashHandler.h"
+
+#include <iostream>
+#include <iomanip>
+#include <sstream>
 
 using namespace std;
 using namespace openshot;
@@ -60,7 +46,8 @@ CrashHandler *CrashHandler::Instance()
 		sigaction( SIGBUS,  &sa, NULL );
 		sigaction( SIGILL,  &sa, NULL );
 		sigaction( SIGFPE,  &sa, NULL );
-		sigaction( SIGPIPE, &sa, NULL );
+		// Preserve the host's SIGPIPE policy. Python ignores it so a closed
+		// output pipe reports EPIPE instead of terminating the entire editor.
 #endif
 	}
 
@@ -68,6 +55,23 @@ CrashHandler *CrashHandler::Instance()
 }
 
 #ifdef __MINGW32__
+// GpuDebug: with OPENSHOT_GPU_DEBUG set, save a small crash dump (thread
+// stacks only) to %USERPROFILE%\.openshot_qt for debugging test builds.
+static void writeMiniDump()
+{
+	const char* profile = getenv("USERPROFILE");
+	if (!getenv("OPENSHOT_GPU_DEBUG") || !profile)
+		return;
+	char path[MAX_PATH];
+	snprintf(path, sizeof(path), "%s\\.openshot_qt\\openshot-crash-%lu.dmp", profile, GetCurrentProcessId());
+	HANDLE file = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (file == INVALID_HANDLE_VALUE)
+		return;
+	if (MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), file, MiniDumpNormal, NULL, NULL, NULL))
+		fprintf(stderr, "Crash dump saved: %s\n", path);
+	CloseHandle(file);
+}
+
 // Windows exception handler
 void CrashHandler::abortHandler(int signum)
 {
@@ -89,6 +93,7 @@ void CrashHandler::abortHandler(int signum)
 
 	// Dump a stack trace.
 	printStackTrace(stderr, 63);
+	writeMiniDump();
 
 	// Quit
 	exit( signum );
@@ -126,7 +131,7 @@ void CrashHandler::abortHandler( int signum, siginfo_t* si, void* unused )
 void CrashHandler::printStackTrace(FILE *out, unsigned int max_frames)
 {
 	fprintf(out, "---- Unhandled Exception: Stack Trace ----\n");
-	ZmqLogger::Instance()->LogToFile("---- Unhandled Exception: Stack Trace ----\n");
+	Logger::Instance()->LogToFile("---- Unhandled Exception: Stack Trace ----\n");
 	stringstream stack_output;
 
 #ifdef __MINGW32__
@@ -211,7 +216,7 @@ void CrashHandler::printStackTrace(FILE *out, unsigned int max_frames)
 	if ( addrlen == 0 )
 	{
 		fprintf(out, "  No stack trace found (addrlen == 0)\n");
-		ZmqLogger::Instance()->LogToFile("  No stack trace found (addrlen == 0)\n");
+		Logger::Instance()->LogToFile("  No stack trace found (addrlen == 0)\n");
 		return;
 	}
 
@@ -316,8 +321,8 @@ void CrashHandler::printStackTrace(FILE *out, unsigned int max_frames)
 #endif
 
 	// Write stacktrace to file (if log path set)
-	ZmqLogger::Instance()->LogToFile(stack_output.str());
+	Logger::Instance()->LogToFile(stack_output.str());
 
 	fprintf(out, "---- End of Stack Trace ----\n");
-	ZmqLogger::Instance()->LogToFile("---- End of Stack Trace ----\n");
+	Logger::Instance()->LogToFile("---- End of Stack Trace ----\n");
 }

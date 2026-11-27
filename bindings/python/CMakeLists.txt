@@ -5,36 +5,23 @@
 # @section LICENSE
 #
 # Copyright (c) 2008-2019 OpenShot Studios, LLC
-# <http://www.openshotstudios.com/>. This file is part of
-# OpenShot Library (libopenshot), an open-source project dedicated to
-# delivering high quality video editing and animation solutions to the
-# world. For more information visit <http://www.openshot.org/>.
 #
-# OpenShot Library (libopenshot) is free software: you can redistribute it
-# and/or modify it under the terms of the GNU Lesser General Public License
-# as published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# OpenShot Library (libopenshot) is distributed in the hope that it will be
-# useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU Lesser General Public License for more details.
-#
-# You should have received a copy of the GNU Lesser General Public License
-# along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
-################################################################################
-
+# SPDX-License-Identifier: LGPL-3.0-or-later
 
 ############### SWIG PYTHON BINDINGS ################
 find_package(SWIG 3.0 REQUIRED)
 include(${SWIG_USE_FILE})
 
-### Enable some legacy SWIG behaviors, in newer CMAKEs
+### Use modern SWIG target behavior when available
 if (POLICY CMP0078)
-  cmake_policy(SET CMP0078 OLD)
+  cmake_policy(SET CMP0078 NEW)
 endif()
 if (POLICY CMP0086)
-  cmake_policy(SET CMP0086 OLD)
+  cmake_policy(SET CMP0086 NEW)
+endif()
+
+if (POLICY CMP0148)
+  cmake_policy(SET CMP0148 OLD)
 endif()
 
 find_package(PythonInterp 3)
@@ -102,18 +89,28 @@ if (CMAKE_VERSION VERSION_GREATER 3.20)
 endif()
 
 ### Add the SWIG interface file (which defines all the SWIG methods)
-if (CMAKE_VERSION VERSION_LESS 3.8.0)
-  swig_add_module(pyopenshot python openshot.i)
+# Older UseSWIG versions do not track transitive %include headers. Regenerate
+# the wrapper when GPU diagnostics change, including in incremental builds.
+set(SWIG_MODULE_pyopenshot_EXTRA_DEPS
+  "${PROJECT_SOURCE_DIR}/src/GpuDevices.h"
+  "${PROJECT_SOURCE_DIR}/src/GpuMetrics.h"
+  "${PROJECT_SOURCE_DIR}/src/Timeline.h"
+  "${PROJECT_SOURCE_DIR}/src/FFmpegWriter.h"
+  "${PROJECT_SOURCE_DIR}/src/Qt/VulkanOpenGLPresenter.h")
+swig_add_library(pyopenshot LANGUAGE python SOURCES openshot.i)
+
+if (POLICY CMP0078)
+  set(_pyopenshot_target pyopenshot)
 else()
-  swig_add_library(pyopenshot LANGUAGE python SOURCES openshot.i)
+  set(_pyopenshot_target ${SWIG_MODULE_pyopenshot_REAL_NAME})
 endif()
 
 ### Set output name of target
-set_target_properties(${SWIG_MODULE_pyopenshot_REAL_NAME} PROPERTIES
+set_target_properties(${_pyopenshot_target} PROPERTIES
   PREFIX "_" OUTPUT_NAME "openshot")
 
 ### Link the new python wrapper library with libopenshot
-target_link_libraries(${SWIG_MODULE_pyopenshot_REAL_NAME} PUBLIC
+target_link_libraries(${_pyopenshot_target} PUBLIC
   ${PYTHON_LIBRARIES} openshot)
 
 ######### INSTALL PATH ########
@@ -132,12 +129,11 @@ if (NOT DEFINED PYTHON_MODULE_PATH)
       "lib/python${PYTHON_VERSION_MAJOR}.${PYTHON_VERSION_MINOR}/dist-packages")
 
     if (NOT EXISTS "${CMAKE_INSTALL_PREFIX}/${PYTHON_MODULE_PATH}")
-      ### Calculate the python module path (using distutils)
-      execute_process ( COMMAND ${PYTHON_EXECUTABLE} -c "\
-from distutils.sysconfig import get_python_lib; \
-print( get_python_lib( plat_specific=True, prefix='' ) )"
-        OUTPUT_VARIABLE PYTHON_MODULE_PATH
-        OUTPUT_STRIP_TRAILING_WHITESPACE )
+      ### Calculate the python module path (prefer sysconfig, fallback to distutils for compatibility)
+      execute_process(
+              COMMAND ${PYTHON_EXECUTABLE} -c "import sysconfig; p=sysconfig.get_path('platlib', scheme='posix_prefix'); p=p[5:] if p.startswith('/usr/') else p.lstrip('/'); print(p)"
+              OUTPUT_VARIABLE PYTHON_MODULE_PATH
+              OUTPUT_STRIP_TRAILING_WHITESPACE)
     endif()
   endif()
 endif()
@@ -146,7 +142,19 @@ message(STATUS "PYTHON_MODULE_PATH: ${CMAKE_INSTALL_PREFIX}/${PYTHON_MODULE_PATH
 
 ############### INSTALL HEADERS & LIBRARY ################
 ### Install Python bindings
-install(TARGETS ${SWIG_MODULE_pyopenshot_REAL_NAME}
+install(TARGETS ${_pyopenshot_target}
   DESTINATION ${PYTHON_MODULE_PATH} )
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/openshot.py
   DESTINATION ${PYTHON_MODULE_PATH} )
+
+if(BUILD_TESTING)
+  add_test(NAME Logger:PythonEnvironment
+    COMMAND ${CMAKE_COMMAND} -E env
+      "PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR}"
+      "OPENSHOT_TEST_MODULE_DIR=$<TARGET_FILE_DIR:${_pyopenshot_target}>"
+      "OPENSHOT_TEST_DLL_DIR=$<TARGET_FILE_DIR:openshot>"
+      # The Windows build copies libopenshot-audio.dll into the tests directory.
+      "OPENSHOT_TEST_AUDIO_DLL_DIR=${PROJECT_BINARY_DIR}/tests"
+      ${PYTHON_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/test_logger.py")
+  set_tests_properties(Logger:PythonEnvironment PROPERTIES LABELS Logger)
+endif()

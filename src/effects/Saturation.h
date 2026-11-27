@@ -6,27 +6,9 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_SATURATION_EFFECT_H
 #define OPENSHOT_SATURATION_EFFECT_H
@@ -50,6 +32,10 @@
 
 namespace openshot
 {
+	enum SaturationMaskMode {
+		SATURATION_MASK_POST_BLEND = 0,
+		SATURATION_MASK_DRIVE_AMOUNT = 1
+	};
 
 	/**
 	 * @brief This class adjusts the saturation of color on a frame's image.
@@ -59,15 +45,25 @@ namespace openshot
 	 */
 	class Saturation : public EffectBase
 	{
+	protected:
+		bool RendersOnVulkan() const override { return true; }
+		bool MaskDrivesAmount(int64_t frame_number) const override { return UseCustomMaskBlend(frame_number); }
+
 	private:
 		/// Init effect settings
 		void init_effect_details();
+
+	protected:
+		bool UseCustomMaskBlend(int64_t frame_number) const override;
+		void ApplyCustomMaskBlend(std::shared_ptr<QImage> original_image, std::shared_ptr<QImage> effected_image,
+							  std::shared_ptr<QImage> mask_image, int64_t frame_number) const override;
 
 	public:
 		Keyframe saturation;	///< Overall color saturation: 0.0 = greyscale, 1.0 = normal, 2.0 = double saturation
 		Keyframe saturation_R;	///< Red color saturation
 		Keyframe saturation_G;	///< Green color saturation
 		Keyframe saturation_B;	///< Blue color saturation
+		int mask_mode;	///< How to apply common masks to saturation (post-blend or drive-amount).
 
 		/// Blank constructor, useful when using Json to load the effect properties
 		Saturation();

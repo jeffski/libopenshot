@@ -6,30 +6,13 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "DummyReader.h"
 #include "Exceptions.h"
+#include "Frame.h"
 
 using namespace openshot;
 
@@ -38,7 +21,7 @@ void DummyReader::init(Fraction fps, int width, int height, int sample_rate, int
 	// Set key info settings
 	info.has_audio = false;
 	info.has_video = true;
-	info.file_size = width * height * sizeof(int);
+	info.file_size = static_cast<size_t>(width) * height * sizeof(int);
 	info.vcodec = "raw";
 	info.fps = fps;
 	info.width = width;
@@ -64,21 +47,23 @@ void DummyReader::init(Fraction fps, int width, int height, int sample_rate, int
 }
 
 // Blank constructor for DummyReader, with default settings.
-DummyReader::DummyReader() : dummy_cache(NULL), is_open(false) {
+DummyReader::DummyReader() : dummy_cache(NULL), last_cached_frame(NULL), image_frame(NULL), is_open(false) {
 
 	// Initialize important variables
 	init(Fraction(24,1), 1280, 768, 44100, 2, 30.0);
 }
 
 // Constructor for DummyReader.  Pass a framerate and samplerate.
-DummyReader::DummyReader(Fraction fps, int width, int height, int sample_rate, int channels, float duration) : dummy_cache(NULL), is_open(false) {
+DummyReader::DummyReader(Fraction fps, int width, int height, int sample_rate, int channels, float duration) :
+    dummy_cache(NULL), last_cached_frame(NULL), image_frame(NULL), is_open(false) {
 
 	// Initialize important variables
 	init(fps, width, height, sample_rate, channels, duration);
 }
 
 // Constructor which also takes a cache object
-DummyReader::DummyReader(Fraction fps, int width, int height, int sample_rate, int channels, float duration, CacheBase* cache) : is_open(false) {
+DummyReader::DummyReader(Fraction fps, int width, int height, int sample_rate, int channels, float duration,
+                         CacheBase* cache) :  last_cached_frame(NULL), image_frame(NULL), is_open(false) {
 
 	// Initialize important variables
 	init(fps, width, height, sample_rate, channels, duration);
@@ -130,21 +115,26 @@ std::shared_ptr<Frame> DummyReader::GetFrame(int64_t requested_frame)
 
 	if (dummy_cache_count == 0 && image_frame) {
 		// Create a scoped lock, allowing only a single thread to run the following code at one time
-		const GenericScopedLock<CriticalSection> lock(getFrameCriticalSection);
+		const std::lock_guard<std::recursive_mutex> lock(getFrameMutex);
 
 		// Always return same frame (regardless of which frame number was requested)
 		image_frame->number = requested_frame;
+		last_cached_frame = image_frame;
 		return image_frame;
 
 	} else if (dummy_cache_count > 0) {
 		// Create a scoped lock, allowing only a single thread to run the following code at one time
-		const GenericScopedLock<CriticalSection> lock(getFrameCriticalSection);
+		const std::lock_guard<std::recursive_mutex> lock(getFrameMutex);
 
 		// Get a frame from the dummy cache
 		std::shared_ptr<openshot::Frame> f = dummy_cache->GetFrame(requested_frame);
 		if (f) {
-			// return frame from cache (if found)
-			return f;
+            // return frame from cache (if found)
+            last_cached_frame = f;
+            return f;
+        } else if (last_cached_frame) {
+		    // If available, return last cached frame
+            return last_cached_frame;
 		} else {
 			// No cached frame found
 			throw InvalidFile("Requested frame not found. You can only access Frame numbers that exist in the Cache object.", "dummy");

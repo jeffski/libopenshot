@@ -6,43 +6,36 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
-#include <catch2/catch.hpp>
+#include "openshot_catch.h"
 
 #include <QGuiApplication>
+#include <QTemporaryDir>
+#include <sstream>
 
 #include "QtImageReader.h"
-#include "Frame.h"
 #include "Clip.h"
+#include "Exceptions.h"
+#include "Frame.h"
 #include "Timeline.h"
 
 using namespace openshot;
 
 TEST_CASE( "Default_Constructor", "[libopenshot][qtimagereader]" )
 {
-	// Check invalid path
-	CHECK_THROWS_AS(QtImageReader(""), InvalidFile);
+	// Check invalid path and error details
+	const std::string invalid_path = "/tmp/__openshot_missing_test_file__.png";
+	try {
+		QtImageReader r(invalid_path);
+		FAIL("Expected InvalidFile for missing image path");
+	} catch (const InvalidFile& e) {
+		const std::string message = e.what();
+		CHECK(message.find("QtImageReader could not open image file.") != std::string::npos);
+		CHECK(message.find(invalid_path) != std::string::npos);
+	}
 }
 
 TEST_CASE( "GetFrame_Before_Opening", "[libopenshot][qtimagereader]" )
@@ -50,7 +43,7 @@ TEST_CASE( "GetFrame_Before_Opening", "[libopenshot][qtimagereader]" )
 	// Create a reader
 	std::stringstream path;
 	path << TEST_MEDIA_PATH << "front.png";
-    QtImageReader r(path.str());
+	QtImageReader r(path.str());
 
 	// Check invalid path
 	CHECK_THROWS_AS(r.GetFrame(1), ReaderClosed);
@@ -58,15 +51,15 @@ TEST_CASE( "GetFrame_Before_Opening", "[libopenshot][qtimagereader]" )
 
 TEST_CASE( "Check_SVG_Loading", "[libopenshot][qtimagereader]" )
 {
-	// Create a reader
-	std::stringstream path;
-	path << TEST_MEDIA_PATH << "1F0CF.svg";
+    // Create a reader
+    std::stringstream path;
+    path << TEST_MEDIA_PATH << "1F0CF.svg";
     QtImageReader r(path.str());
-	r.Open();
+    r.Open();
 
-	// Get frame, with no Timeline or Clip
-	// Size should be equal to default SVG size
-	std::shared_ptr<Frame> f = r.GetFrame(1);
+    // Get frame, with no Timeline or Clip
+    // Size should be equal to default SVG size
+    std::shared_ptr<Frame> f = r.GetFrame(1);
     CHECK(f->GetImage()->width() == 72);
     CHECK(f->GetImage()->height() == 72);
 
@@ -97,7 +90,96 @@ TEST_CASE( "Check_SVG_Loading", "[libopenshot][qtimagereader]" )
     CHECK(f->GetImage()->width() == 480 * 2);
     CHECK(f->GetImage()->height() == 480 * 2);
 
-	// Close reader
-	t1.Close();
+    // Close reader
+    t1.Close();
+    r.Close();
+}
+
+TEST_CASE( "Duration_And_Length_QtImageReader", "[libopenshot][qtimagereader]" )
+{
+	// Create a reader
+	std::stringstream path;
+	path << TEST_MEDIA_PATH << "front.png";
+	QtImageReader r(path.str());
+	r.Open();
+
+	// Duration and frame count should be aligned to fps (1 hour at 30 fps)
+	CHECK(r.info.fps.num == 30);
+	CHECK(r.info.fps.den == 1);
+	CHECK(r.info.video_length == 108000);
+	CHECK(r.info.duration == Approx(3600.0f).margin(0.001f));
+
 	r.Close();
+}
+
+TEST_CASE( "Max_Decode_Size_QtImageReader", "[libopenshot][qtimagereader]" )
+{
+	std::stringstream path;
+	path << TEST_MEDIA_PATH << "front.png";
+
+	QtImageReader r(path.str());
+	r.Open();
+
+	std::shared_ptr<Frame> full = r.GetFrame(1);
+	REQUIRE(full != nullptr);
+	CHECK(full->GetWidth() == r.info.width);
+	CHECK(full->GetHeight() == r.info.height);
+
+	r.SetMaxDecodeSize(64, 64);
+	std::shared_ptr<Frame> limited = r.GetFrame(2);
+	REQUIRE(limited != nullptr);
+	CHECK(limited->GetWidth() <= 64);
+	CHECK(limited->GetHeight() <= 64);
+	CHECK(limited->GetWidth() < full->GetWidth());
+	CHECK(limited->GetHeight() < full->GetHeight());
+
+	r.Close();
+}
+
+TEST_CASE( "Max_Decode_Size_SVG_QtImageReader", "[libopenshot][qtimagereader]" )
+{
+	std::stringstream path;
+	path << TEST_MEDIA_PATH << "1F0CF.svg";
+
+	QtImageReader r(path.str());
+	r.Open();
+
+	std::shared_ptr<Frame> original = r.GetFrame(1);
+	REQUIRE(original != nullptr);
+	CHECK(original->GetWidth() == 72);
+	CHECK(original->GetHeight() == 72);
+
+	r.SetMaxDecodeSize(256, 128);
+	std::shared_ptr<Frame> limited = r.GetFrame(2);
+	REQUIRE(limited != nullptr);
+	CHECK(limited->GetWidth() == 128);
+	CHECK(limited->GetHeight() == 128);
+
+	r.Close();
+}
+
+TEST_CASE("Artwork resolution follows maximum animation scale and preview size", "[libopenshot][qtimagereader]") {
+    QTemporaryDir directory;
+    const auto path=directory.filePath("large.png");
+    QImage image(1024,1024,QImage::Format_RGBA8888_Premultiplied);
+    image.fill(Qt::red);
+    REQUIRE(image.save(path));
+    QtImageReader reader(path.toStdString());
+    Clip clip(&reader);
+    clip.scale_x.AddPoint(1,1.0,LINEAR);
+    clip.scale_x.AddPoint(10,2.0,LINEAR);
+    clip.scale_y=clip.scale_x;
+    Timeline timeline(128,128,Fraction(24,1),48000,2,LAYOUT_STEREO);
+    timeline.AddClip(&clip);
+    timeline.Open();
+    clip.Reader()->Open();
+    auto first=reader.GetFrame(1)->GetImage();
+    CHECK(first->size()==QSize(256,256));
+    CHECK(reader.GetFrame(8)->GetImage()->cacheKey()==first->cacheKey());
+    clip.scale_x.AddPoint(10,4.0,LINEAR);
+    clip.scale_y=clip.scale_x;
+    CHECK(reader.GetFrame(1)->GetWidth()==512);
+    timeline.preview_width=timeline.preview_height=64;
+    CHECK(reader.GetFrame(1)->GetWidth()==256);
+    timeline.Close();
 }

@@ -6,30 +6,18 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "Wave.h"
 #include "Exceptions.h"
+
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+#include "VulkanCompositor.h"
+#include "VulkanFrameImage.h"
+#include "Logger.h"
+#endif
 
 using namespace openshot;
 
@@ -66,12 +54,36 @@ void Wave::init_effect_details()
 // modified openshot::Frame object
 std::shared_ptr<openshot::Frame> Wave::GetFrame(std::shared_ptr<openshot::Frame> frame, int64_t frame_number)
 {
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+    if (VulkanRenderingEnabled()) {
+        try {
+            auto surface=frame->GetDeferredImage();
+            if(!surface && ParentClip() && frame->has_image_data) surface=UploadVulkanImage(*frame->GetImage());
+            if(surface) {
+                std::vector<float> offsets(surface->GetHeight());
+                const double wl=wavelength.GetValue(frame_number),amp=amplitude.GetValue(frame_number),
+                    mult=multiplier.GetValue(frame_number),shift=shift_x.GetValue(frame_number),speed=speed_y.GetValue(frame_number);
+                for(int y=0;y<surface->GetHeight();++y) {
+                    float noise=(100+y*0.001)*mult, noise_amp=noise*amp;
+                    float wave=sin(y*wl+double(frame_number)*speed);
+                    offsets[y]=(wave+shift)*noise_amp;
+                }
+                frame->AddDeferredImage(WaveVulkanImage(surface,offsets));
+                return frame;
+            }
+        } catch(const std::exception& e) {
+            Logger::Instance()->Log(std::string("Vulkan Wave CPU fallback: ")+e.what());
+        }
+    }
+#endif
+
 	// Get the frame's image
 	std::shared_ptr<QImage> frame_image = frame->GetImage();
 
-	// Get original pixels for frame image, and also make a copy for editing
-	const unsigned char *original_pixels = (unsigned char *) frame_image->constBits();
-	unsigned char *pixels = (unsigned char *) frame_image->bits();
+	// Copy original pixels for reference, and get a writable pointer for editing
+	QImage original = frame_image->copy();
+	const unsigned char *original_pixels = original.constBits();
+	unsigned char *pixels = frame_image->bits();
 	int pixel_count = frame_image->width() * frame_image->height();
 
 	// Get current keyframe values
@@ -95,7 +107,7 @@ std::shared_ptr<openshot::Frame> Wave::GetFrame(std::shared_ptr<openshot::Frame>
 		float waveformVal = sin((Y * wavelength_value) + (time * speed_y_value));  // Waveform algorithm on y-axis
 		float waveVal = (waveformVal + shift_x_value) * noiseAmp;  // Shifts pixels on the x-axis
 
-		long unsigned int source_px = round(pixel + waveVal);
+		int source_px = lround(pixel + waveVal);
 		if (source_px < 0)
 			source_px = 0;
 		if (source_px >= pixel_count)
@@ -172,13 +184,7 @@ void Wave::SetJsonValue(const Json::Value root) {
 std::string Wave::PropertiesJSON(int64_t requested_frame) const {
 
 	// Generate JSON properties list
-	Json::Value root;
-	root["id"] = add_property_json("ID", 0.0, "string", Id(), NULL, -1, -1, true, requested_frame);
-	root["position"] = add_property_json("Position", Position(), "float", "", NULL, 0, 1000 * 60 * 30, false, requested_frame);
-	root["layer"] = add_property_json("Track", Layer(), "int", "", NULL, 0, 20, false, requested_frame);
-	root["start"] = add_property_json("Start", Start(), "float", "", NULL, 0, 1000 * 60 * 30, false, requested_frame);
-	root["end"] = add_property_json("End", End(), "float", "", NULL, 0, 1000 * 60 * 30, false, requested_frame);
-	root["duration"] = add_property_json("Duration", Duration(), "float", "", NULL, 0, 1000 * 60 * 30, true, requested_frame);
+	Json::Value root = BasePropertiesJSON(requested_frame);
 
 	// Keyframes
 	root["wavelength"] = add_property_json("Wave length", wavelength.GetValue(requested_frame), "float", "", &wavelength, 0.0, 3.0, false, requested_frame);
@@ -186,9 +192,6 @@ std::string Wave::PropertiesJSON(int64_t requested_frame) const {
 	root["multiplier"] = add_property_json("Multiplier", multiplier.GetValue(requested_frame), "float", "", &multiplier, 0.0, 10.0, false, requested_frame);
 	root["shift_x"] = add_property_json("X Shift", shift_x.GetValue(requested_frame), "float", "", &shift_x, 0.0, 1000.0, false, requested_frame);
 	root["speed_y"] = add_property_json("Vertical speed", speed_y.GetValue(requested_frame), "float", "", &speed_y, 0.0, 300.0, false, requested_frame);
-
-	// Set the parent effect which properties this effect will inherit
-	root["parent_effect_id"] = add_property_json("Parent", 0.0, "string", info.parent_effect_id, NULL, -1, -1, false, requested_frame);
 
 	// Return formatted string
 	return root.toStyledString();

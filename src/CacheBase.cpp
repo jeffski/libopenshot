@@ -6,27 +6,9 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "CacheBase.h"
 
@@ -34,15 +16,12 @@ using namespace std;
 using namespace openshot;
 
 // Default constructor, no max frames
-CacheBase::CacheBase() : max_bytes(0) {
-	// Init the critical section
-	cacheCriticalSection = new CriticalSection();
-}
+CacheBase::CacheBase() : CacheBase::CacheBase(0) { }
 
 // Constructor that sets the max frames to cache
 CacheBase::CacheBase(int64_t max_bytes) : max_bytes(max_bytes) {
-	// Init the critical section
-	cacheCriticalSection = new CriticalSection();
+	// Init the mutex
+	cacheMutex = new std::recursive_mutex();
 }
 
 // Set maximum bytes to a different amount based on a ReaderInfo struct
@@ -53,14 +32,76 @@ void CacheBase::SetMaxBytesFromInfo(int64_t number_of_frames, int width, int hei
 	SetMaxBytes(bytes);
 }
 
+// Calculate ranges of frames
+void CacheBase::CalculateRanges() {
+	// Only calculate when something has changed
+	if (needs_range_processing) {
+
+		// Create a scoped lock, to protect the cache from multiple threads
+		const std::lock_guard<std::recursive_mutex> lock(*cacheMutex);
+
+		// Sort ordered frame #s, and calculate JSON ranges
+		std::sort(ordered_frame_numbers.begin(), ordered_frame_numbers.end());
+
+		// Clear existing JSON variable
+		Json::Value ranges = Json::Value(Json::arrayValue);
+
+		// Increment range version
+		range_version++;
+
+		std::vector<int64_t>::iterator itr_ordered;
+
+        int64_t starting_frame = 0;
+        int64_t ending_frame = 0;
+        if (ordered_frame_numbers.size() > 0) {
+            starting_frame = *ordered_frame_numbers.begin();
+            ending_frame = *ordered_frame_numbers.begin();
+
+            // Loop through all known frames (in sequential order)
+            for (itr_ordered = ordered_frame_numbers.begin(); itr_ordered != ordered_frame_numbers.end(); ++itr_ordered) {
+                int64_t frame_number = *itr_ordered;
+                if (frame_number - ending_frame > 1) {
+                    // End of range detected
+                    Json::Value range;
+
+                    // Add JSON object with start/end attributes
+                    // Use strings, since int64_ts are supported in JSON
+                    range["start"] = std::to_string(starting_frame);
+                    range["end"] = std::to_string(ending_frame);
+                    ranges.append(range);
+
+                    // Set new starting range
+                    starting_frame = frame_number;
+                }
+
+                // Set current frame as end of range, and keep looping
+                ending_frame = frame_number;
+            }
+        }
+
+        // APPEND FINAL VALUE
+        Json::Value range;
+
+        // Add JSON object with start/end attributes
+        // Use strings, since int64_ts are not supported in JSON
+        range["start"] = std::to_string(starting_frame);
+        range["end"] = std::to_string(ending_frame);
+        ranges.append(range);
+
+        // Cache range JSON as string
+        json_ranges = ranges.toStyledString();
+
+        // Reset needs_range_processing
+        needs_range_processing = false;
+    }
+}
+
 // Generate Json::Value for this object
 Json::Value CacheBase::JsonValue() {
 
 	// Create root json object
 	Json::Value root;
-	std::stringstream max_bytes_stream;
-	max_bytes_stream << max_bytes;
-	root["max_bytes"] = max_bytes_stream.str();
+	root["max_bytes"] = std::to_string(max_bytes);
 
 	// return JsonValue
 	return root;

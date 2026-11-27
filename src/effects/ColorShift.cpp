@@ -6,30 +6,19 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "ColorShift.h"
 #include "Exceptions.h"
+#include <cmath>
+
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+#include "VulkanCompositor.h"
+#include "VulkanFrameImage.h"
+#include "Logger.h"
+#endif
 
 using namespace openshot;
 
@@ -65,6 +54,30 @@ void ColorShift::init_effect_details()
 // modified openshot::Frame object
 std::shared_ptr<openshot::Frame> ColorShift::GetFrame(std::shared_ptr<openshot::Frame> frame, int64_t frame_number)
 {
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+    // CPU channel shifts first round the evaluated keyframe to float.
+    const auto offset = [](float value, int size) {
+        const int pixels = int(std::round(size * std::fmod(std::fabs(value), 1.0)));
+        return value < 0 ? -pixels : pixels;
+    };
+    if (VulkanRenderingEnabled()) {
+        try {
+            auto surface = frame->GetDeferredImage();
+            if (!surface && ParentClip() && frame->has_image_data)
+                surface = UploadVulkanImage(*frame->GetImage());
+            if (surface) {
+                frame->AddDeferredImage(ShiftVulkanImage(surface, {
+                    offset(red_x.GetValue(frame_number), surface->GetWidth()), offset(red_y.GetValue(frame_number), surface->GetHeight()),
+                    offset(green_x.GetValue(frame_number), surface->GetWidth()), offset(green_y.GetValue(frame_number), surface->GetHeight()),
+                    offset(blue_x.GetValue(frame_number), surface->GetWidth()), offset(blue_y.GetValue(frame_number), surface->GetHeight()),
+                    offset(alpha_x.GetValue(frame_number), surface->GetWidth()), offset(alpha_y.GetValue(frame_number), surface->GetHeight())}));
+                return frame;
+            }
+        } catch (const std::exception& error) {
+            Logger::Instance()->Log(std::string("Vulkan color shift CPU fallback: ") + error.what());
+        }
+    }
+#endif
 	// Get the frame's image
 	std::shared_ptr<QImage> frame_image = frame->GetImage();
 	unsigned char *pixels = (unsigned char *) frame_image->bits();
@@ -130,10 +143,10 @@ std::shared_ptr<openshot::Frame> ColorShift::GetFrame(std::shared_ptr<openshot::
 			blue_starting_row_index = starting_row_index;
 			alpha_starting_row_index = starting_row_index;
 
-			red_pixel_offset = 0;
-			green_pixel_offset = 0;
-			blue_pixel_offset = 0;
-			alpha_pixel_offset = 0;
+			red_pixel_offset = col;
+			green_pixel_offset = col;
+			blue_pixel_offset = col;
+			alpha_pixel_offset = col;
 
 			// Get the RGBA value from each pixel (depending on offset)
 			R = temp_image[byte_index];
@@ -264,13 +277,7 @@ void ColorShift::SetJsonValue(const Json::Value root) {
 std::string ColorShift::PropertiesJSON(int64_t requested_frame) const {
 
 	// Generate JSON properties list
-	Json::Value root;
-	root["id"] = add_property_json("ID", 0.0, "string", Id(), NULL, -1, -1, true, requested_frame);
-	root["position"] = add_property_json("Position", Position(), "float", "", NULL, 0, 1000 * 60 * 30, false, requested_frame);
-	root["layer"] = add_property_json("Track", Layer(), "int", "", NULL, 0, 20, false, requested_frame);
-	root["start"] = add_property_json("Start", Start(), "float", "", NULL, 0, 1000 * 60 * 30, false, requested_frame);
-	root["end"] = add_property_json("End", End(), "float", "", NULL, 0, 1000 * 60 * 30, false, requested_frame);
-	root["duration"] = add_property_json("Duration", Duration(), "float", "", NULL, 0, 1000 * 60 * 30, true, requested_frame);
+	Json::Value root = BasePropertiesJSON(requested_frame);
 
 	// Keyframes
 	root["red_x"] = add_property_json("Red X Shift", red_x.GetValue(requested_frame), "float", "", &red_x, -1, 1, false, requested_frame);
@@ -281,9 +288,6 @@ std::string ColorShift::PropertiesJSON(int64_t requested_frame) const {
 	root["blue_y"] = add_property_json("Blue Y Shift", blue_y.GetValue(requested_frame), "float", "", &blue_y, -1, 1, false, requested_frame);
 	root["alpha_x"] = add_property_json("Alpha X Shift", alpha_x.GetValue(requested_frame), "float", "", &alpha_x, -1, 1, false, requested_frame);
 	root["alpha_y"] = add_property_json("Alpha Y Shift", alpha_y.GetValue(requested_frame), "float", "", &alpha_y, -1, 1, false, requested_frame);
-
-	// Set the parent effect which properties this effect will inherit
-	root["parent_effect_id"] = add_property_json("Parent", 0.0, "string", info.parent_effect_id, NULL, -1, -1, false, requested_frame);
 
 	// Return formatted string
 	return root.toStyledString();

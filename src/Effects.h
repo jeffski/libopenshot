@@ -9,46 +9,44 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 /* Effects */
+#include "effects/AnalogTape.h"
+#include "effects/AudioVisualization.h"
 #include "effects/Bars.h"
+#include "effects/BeatSync.h"
 #include "effects/Blur.h"
 #include "effects/Brightness.h"
 #include "effects/Caption.h"
 #include "effects/ChromaKey.h"
+#include "effects/ColorGrade.h"
+#include "effects/ColorMap.h"
 #include "effects/ColorShift.h"
 #include "effects/Crop.h"
 #include "effects/Deinterlace.h"
+#include "effects/Displace.h"
+#include "effects/FilmGrain.h"
+#include "effects/Glow.h"
 #include "effects/Hue.h"
+#include "effects/LensFlare.h"
 #include "effects/Mask.h"
 #include "effects/Negate.h"
 #include "effects/Pixelate.h"
 #include "effects/Saturation.h"
+#include "effects/Sharpen.h"
+#include "effects/Shadow.h"
+#include "effects/SphericalProjection.h"
 #include "effects/Shift.h"
+#include "effects/Timer.h"
+#include "effects/DenoiseImage.h"
+#include "effects/Distort.h"
 #include "effects/Wave.h"
 
 /* Audio Effects */
+#include "audio_effects/PitchShift.h"
 #include "audio_effects/Noise.h"
 #include "audio_effects/Delay.h"
 #include "audio_effects/Echo.h"
@@ -61,7 +59,9 @@
 
 /* OpenCV Effects */
 #ifdef USE_OPENCV
+#include "effects/Outline.h"
 #include "effects/ObjectDetection.h"
+#include "effects/ObjectMask.h"
 #include "effects/Tracker.h"
 #include "effects/Stabilizer.h"
 #endif

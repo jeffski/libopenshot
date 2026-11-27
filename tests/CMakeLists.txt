@@ -5,24 +5,8 @@
 # @section LICENSE
 #
 # Copyright (c) 2008-2019 OpenShot Studios, LLC
-# <http://www.openshotstudios.com/>. This file is part of
-# OpenShot Library (libopenshot), an open-source project dedicated to
-# delivering high quality video editing and animation solutions to the
-# world. For more information visit <http://www.openshot.org/>.
 #
-# OpenShot Library (libopenshot) is free software: you can redistribute it
-# and/or modify it under the terms of the GNU Lesser General Public License
-# as published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# OpenShot Library (libopenshot) is distributed in the hope that it will be
-# useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU Lesser General Public License for more details.
-#
-# You should have received a copy of the GNU Lesser General Public License
-# along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
-################################################################################
+# SPDX-License-Identifier: LGPL-3.0-or-later
 
 # Allow spaces in test names
 if(POLICY CMP0110)
@@ -30,45 +14,112 @@ if(POLICY CMP0110)
 endif()
 
 # Test media path, used by unit tests for input data
-file(TO_NATIVE_PATH "${PROJECT_SOURCE_DIR}/examples/" TEST_MEDIA_PATH)
-
-################# BLACKMAGIC DECKLINK ###################
-if(ENABLE_BLACKMAGIC)
-	# Find BlackMagic DeckLinkAPI libraries
-	find_package(BlackMagic)
-
-	if(BLACKMAGIC_FOUND)
-		# Include Blackmagic headers (needed for compile)
-		include_directories(${BLACKMAGIC_INCLUDE_DIR})
-	endif()
+file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}/examples/" TEST_MEDIA_PATH)
+if(NOT TEST_MEDIA_PATH MATCHES "/$")
+  string(APPEND TEST_MEDIA_PATH "/")
 endif()
+
+# Reproducible optimized startup workload (explicit opt-in, no test timing assertions).
+if(UNIX)
+  add_executable(openshot-preroll-workload EXCLUDE_FROM_ALL PrerollWorkload.cpp)
+  target_link_libraries(openshot-preroll-workload openshot)
+endif()
+
+# Benchmark executable
+add_executable(openshot-benchmark Benchmark.cpp BenchmarkOptions.cpp)
+target_compile_definitions(openshot-benchmark PRIVATE -DTEST_MEDIA_PATH="${TEST_MEDIA_PATH}")
+target_link_libraries(openshot-benchmark openshot)
 
 ###
 ###  TEST SOURCE FILES
 ###
 set(OPENSHOT_TESTS
+  OpenShotVersion
+  GpuMetrics
+  AdaptivePreroll
+  AudioDeviceManager
+  AudioDeviceInitialization
+  AudioRecorder
+  AudioReaderSource
+  AudioPlaybackThread
+  AnimatedCurve
+  AudioWaveformer
+  CameraCaptureReader
   CacheDisk
   CacheMemory
+  Caption
   Clip
   Color
+  ColorManagement
   Coordinate
   DummyReader
+  FFmpegCapabilities
   FFmpegReader
   FFmpegWriter
   Fraction
   Frame
+  FrameScope
   FrameMapper
   KeyFrame
+  PitchShift
+  Logger
+  LiveScale
   Point
+  Profiles
+  QtPlayer
   QtImageReader
+  QtTextReader
   ReaderBase
+  RendererBase
+  NativeArm64ProcessOracle
   Settings
+  ScreenCaptureReader
+  SphericalMetadata
   Timeline
+  ObjectParents
+  VideoCacheThread
+  # Effects
+  AudioVisualization
+  Bars
+  BeatSync
+  Blur
+  ColorGrade
+  ColorMap
+  ChromaKey
+  Crop
+  Displace
+  FilmGrain
+  Glow
+  LensFlare
+  AnalogTape
+  BenchmarkArgs
+  EffectMask
+  Mask
+  Pixelate
+  Saturation
+  Sharpen
+  Shadow
+  SphericalEffect
+  Timer
+  DenoiseImage
+  Distort
+  WaveEffect
 )
+
+if(ENABLE_GPU_FRAME)
+  list(APPEND OPENSHOT_TESTS VulkanCompositor VulkanPresentation VulkanDeviceLost)
+endif()
+
+# The SIGPIPE crash-handler test is POSIX-only. Do not create an empty
+# Catch2 executable on Windows, where discovery registers a NOT_BUILT test.
+if(NOT WIN32)
+  list(APPEND OPENSHOT_TESTS CrashHandler)
+endif()
 
 # ImageMagick related test files
 if($CACHE{HAVE_IMAGEMAGICK})
   list(APPEND OPENSHOT_TESTS
+    ImageReader
     ImageWriter
   )
 endif()
@@ -78,6 +129,8 @@ if($CACHE{HAVE_OPENCV})
   list(APPEND OPENSHOT_TESTS
     CVTracker
     CVStabilizer
+    CVOutline
+    ObjectMask
     # CVObjectDetection
   )
 endif()
@@ -92,34 +145,119 @@ if(NOT BUILD_TESTING)
   return()
 endif()
 
-# Create object library for test executable main(),
-# to avoid recompiling for every test
-add_library(catch-main OBJECT catch_main.cpp)
-target_link_libraries(catch-main PUBLIC Catch2::Catch2)
+add_library(openshot_catch2 INTERFACE)
+target_include_directories(openshot_catch2 INTERFACE
+  "${CMAKE_CURRENT_BINARY_DIR}"
+)
+target_compile_definitions(openshot_catch2 INTERFACE
+  TEST_MEDIA_PATH="${TEST_MEDIA_PATH}")
+
+if(TARGET Catch2::Catch2WithMain)
+  # Catch2 v3 works a bit differently
+  configure_file(catch2v3.h.in openshot_catch.h)
+  target_link_libraries(openshot_catch2 INTERFACE Catch2::Catch2WithMain)
+else()
+  configure_file(catch2v2.h.in openshot_catch.h)
+  # Create object library for test executable main(),
+  # to avoid recompiling for every test
+  add_library(catch-main OBJECT catch_main.cpp)
+  target_link_libraries(catch-main PUBLIC Catch2::Catch2)
+  target_include_directories(catch-main PUBLIC
+    "${CMAKE_CURRENT_BINARY_DIR}")
+  target_link_libraries(openshot_catch2 INTERFACE Catch2::Catch2)
+  target_sources(openshot_catch2 INTERFACE $<TARGET_OBJECTS:catch-main>)
+endif()
 
 foreach(tname ${OPENSHOT_TESTS})
-  add_executable(openshot-${tname}-test ${tname}.cpp $<TARGET_OBJECTS:catch-main>)
-  target_compile_definitions(openshot-${tname}-test PRIVATE
-    TEST_MEDIA_PATH="${TEST_MEDIA_PATH}"
+  set(test_sources
+    ${tname}.cpp
   )
-  target_link_libraries(openshot-${tname}-test Catch2::Catch2 openshot)
-  # Automatically configure CTest targets from Catch2 test cases
-  catch_discover_tests(
-    openshot-${tname}-test
-    TEST_PREFIX ${tname}:
-    PROPERTIES
-      LABELS ${tname}
+  if(tname STREQUAL "BenchmarkArgs")
+    list(APPEND test_sources BenchmarkOptions.cpp)
+  endif()
+  add_executable(openshot-${tname}-test
+    ${test_sources}
   )
+  target_link_libraries(openshot-${tname}-test
+    openshot_catch2
+    openshot
+  )
+
+  set(test_properties
+    LABELS ${tname}
+  )
+  if(tname STREQUAL "FFmpegWriter")
+    list(APPEND test_properties
+      SKIP_REGULAR_EXPRESSION "Skipping hardware encoder test:"
+    )
+  endif()
+  if(tname STREQUAL "FFmpegReader")
+    # Catch2 v2 has no native SKIP assertion. Report unavailable VAAPI
+    # prerequisites as skipped in CTest rather than as a passing decode test.
+    list(APPEND test_properties
+      SKIP_REGULAR_EXPRESSION "Skipping VAAPI test:"
+    )
+  endif()
+  if(tname MATCHES "^Vulkan")
+    # Same Vulkan headers as the library (newer than some system packages)
+    target_include_directories(openshot-${tname}-test PRIVATE ${Vulkan_INCLUDE_DIR})
+    if(APPLE)
+      # Tests build Core Video surfaces to exercise VideoToolbox interop.
+      target_link_libraries(openshot-${tname}-test "-framework CoreVideo" "-framework CoreFoundation")
+    endif()
+    # Report missing GPU, display or interop support as skipped, not passed.
+    list(APPEND test_properties
+      SKIP_REGULAR_EXPRESSION "Skipping Vulkan test:"
+    )
+  endif()
+  if(tname STREQUAL "QtTextReader" OR tname STREQUAL "RendererBase")
+    # Pixel assertions need a font engine; Qt's minimal plugin has no font database.
+    list(APPEND test_properties ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+  elseif(tname STREQUAL "Caption" OR tname STREQUAL "Timer")
+    list(APPEND test_properties
+      ENVIRONMENT "QT_QPA_PLATFORM=minimal"
+    )
+  endif()
+
+  if(tname STREQUAL "LiveScale")
+    # Explicit backend runs prevent a successful CPU fallback masking GPU bugs.
+    add_test(NAME LiveScale:CPU COMMAND openshot-LiveScale-test "[live-scale]")
+    set_tests_properties(LiveScale:CPU PROPERTIES
+      LABELS LiveScale
+      ENVIRONMENT "QT_QPA_PLATFORM=offscreen;OPENSHOT_RENDER_BACKEND=cpu"
+    )
+  else()
+    # Automatically configure CTest targets from Catch2 test cases
+    catch_discover_tests(
+      openshot-${tname}-test
+      TEST_PREFIX ${tname}:
+      PROPERTIES
+        ${test_properties}
+    )
+  endif()
   list(APPEND CATCH2_TEST_TARGETS openshot-${tname}-test)
   list(APPEND CATCH2_TEST_NAMES ${tname})
 endforeach()
+
+# Run sharpness/cache coverage on both backends. Missing Vulkan hardware is a
+# reported skip; an available device silently falling back to CPU is a failure.
+if(ENABLE_GPU_FRAME)
+  add_test(NAME LiveScale:Vulkan COMMAND openshot-LiveScale-test "[live-scale]")
+  set_tests_properties(LiveScale:Vulkan PROPERTIES
+    LABELS "LiveScale;Vulkan"
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;OPENSHOT_RENDER_BACKEND=vulkan;OPENSHOT_TEST_REQUIRE_VULKAN=1"
+    SKIP_REGULAR_EXPRESSION "Skipping Vulkan test:"
+  )
+endif()
+
 # Add an additional special-case test, for an envvar-dependent setting
-add_test(NAME [=["Settings:Debug logging (enabled)"]=]
-  COMMAND
-    openshot-Settings-test "[environment]"
-  WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-)
-set_tests_properties([=["Settings:Debug logging (enabled)"]=]
+catch_discover_tests(
+  openshot-Settings-test
+  TEST_LIST Settings_EXTRA_TESTS
+  TEST_SPEC "[environment]"
+  TEST_PREFIX Settings:
+  TEST_SUFFIX "(enabled)"
+  TEST_WORKING_DIR "${_test_dir}"
   PROPERTIES
     LABELS Settings
     ENVIRONMENT "LIBOPENSHOT_DEBUG=1"
@@ -128,3 +266,9 @@ set_tests_properties([=["Settings:Debug logging (enabled)"]=]
 # Export target list for coverage use
 set(UNIT_TEST_TARGETS ${CATCH2_TEST_TARGETS} PARENT_SCOPE)
 set(UNIT_TEST_NAMES ${CATCH2_TEST_NAMES} PARENT_SCOPE)
+
+# Parenting fixtures use the same protobuf schema as saved detection data.
+if($CACHE{HAVE_OPENCV})
+  find_package(Protobuf REQUIRED)
+  target_link_libraries(openshot-ObjectParents-test protobuf::libprotobuf)
+endif()

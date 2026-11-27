@@ -5,24 +5,8 @@
 # @section LICENSE
 #
 # Copyright (c) 2008-2019 OpenShot Studios, LLC
-# <http://www.openshotstudios.com/>. This file is part of
-# OpenShot Library (libopenshot), an open-source project dedicated to
-# delivering high quality video editing and animation solutions to the
-# world. For more information visit <http://www.openshot.org/>.
 #
-# OpenShot Library (libopenshot) is free software: you can redistribute it
-# and/or modify it under the terms of the GNU Lesser General Public License
-# as published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# OpenShot Library (libopenshot) is distributed in the hope that it will be
-# useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU Lesser General Public License for more details.
-#
-# You should have received a copy of the GNU Lesser General Public License
-# along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
-################################################################################
+# SPDX-License-Identifier: LGPL-3.0-or-later
 
 # Collect and display summary of options/dependencies
 include(FeatureSummary)
@@ -35,6 +19,8 @@ if (POLICY CMP0057)
 endif()
 
 ###############  PROFILING  #################
+#set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-omit-frame-pointer -fsanitize=address")
+#set (CMAKE_LINKER_FLAGS "${CMAKE_LINKER_FLAGS} -fno-omit-frame-pointer -fsanitize=address")
 #set(PROFILER "/usr/lib/x86_64-linux-gnu/libprofiler.so.0")
 #set(PROFILER "/usr/lib/x86_64-linux-gnu/libtcmalloc.so.4")
 
@@ -61,14 +47,20 @@ add_feature_info("IWYU (include-what-you-use)" ENABLE_IWYU "Scan all source file
 # Main library sources
 set(OPENSHOT_SOURCES
   AudioBufferSource.cpp
+  AudioRecorder.cpp
+  AnimatedCurve.cpp
+  AudioDevices.cpp
   AudioReaderSource.cpp
   AudioResampler.cpp
+  AudioWaveformer.cpp
+  CameraCaptureReader.cpp
   CacheBase.cpp
   CacheDisk.cpp
   CacheMemory.cpp
   ChunkReader.cpp
   ChunkWriter.cpp
   Color.cpp
+  ColorManagement.cpp
   Clip.cpp
   ClipBase.cpp
   Coordinate.cpp
@@ -76,6 +68,7 @@ set(OPENSHOT_SOURCES
   DummyReader.cpp
   ReaderBase.cpp
   RendererBase.cpp
+  ScreenCaptureReader.cpp
   WriterBase.cpp
   EffectBase.cpp
   EffectInfo.cpp
@@ -83,12 +76,12 @@ set(OPENSHOT_SOURCES
   FFmpegWriter.cpp
   Fraction.cpp
   Frame.cpp
+  FrameScope.cpp
   FrameMapper.cpp
+  MemoryTrim.cpp
   Json.cpp
   KeyFrame.cpp
-  TrackedObjectBase.cpp
   OpenShotVersion.cpp
-  ZmqLogger.cpp
   PlayerBase.cpp
   Point.cpp
   Profiles.cpp
@@ -98,7 +91,24 @@ set(OPENSHOT_SOURCES
   QtTextReader.cpp
   Settings.cpp
   TimelineBase.cpp
-  Timeline.cpp)
+  Timeline.cpp
+  TrackedObjectBase.cpp
+  Logger.cpp
+  )
+
+set(OPENSHOT_WAYLAND_CAPTURE FALSE)
+if(ENABLE_WAYLAND_CAPTURE AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  find_package(PkgConfig)
+  if(PkgConfig_FOUND)
+    pkg_check_modules(PC_PIPEWIRE QUIET IMPORTED_TARGET libpipewire-0.3)
+    pkg_check_modules(PC_LIBSPA QUIET IMPORTED_TARGET libspa-0.2)
+    pkg_check_modules(PC_GIO QUIET IMPORTED_TARGET gio-2.0)
+    pkg_check_modules(PC_GIO_UNIX QUIET IMPORTED_TARGET gio-unix-2.0)
+    if(PC_PIPEWIRE_FOUND AND PC_LIBSPA_FOUND AND PC_GIO_FOUND AND PC_GIO_UNIX_FOUND)
+      set(OPENSHOT_WAYLAND_CAPTURE TRUE)
+    endif()
+  endif()
+endif()
 
 # OpenCV related classes
 set(OPENSHOT_CV_SOURCES
@@ -106,31 +116,51 @@ set(OPENSHOT_CV_SOURCES
   CVStabilization.cpp
   ClipProcessingJobs.cpp
   CVObjectDetection.cpp
+  CVObjectMask.cpp
   TrackedObjectBBox.cpp
   effects/Stabilizer.cpp
   effects/Tracker.cpp
   effects/ObjectDetection.cpp
+  effects/ObjectMask.cpp
+  effects/Outline.cpp
   ./sort_filter/sort.cpp
   ./sort_filter/Hungarian.cpp
   ./sort_filter/KalmanTracker.cpp)
 
 # Video effects
 set(EFFECTS_SOURCES
+  effects/AudioVisualization.cpp
   effects/Bars.cpp
+  effects/BeatSync.cpp
   effects/Blur.cpp
   effects/Brightness.cpp
   effects/Caption.cpp
   effects/ChromaKey.cpp
+  effects/ColorGrade.cpp
+  effects/ColorMap.cpp
   effects/ColorShift.cpp
   effects/Crop.cpp
+  effects/CropHelpers.cpp
   effects/Deinterlace.cpp
+  effects/Displace.cpp
+  effects/FilmGrain.cpp
+  effects/Glow.cpp
   effects/Hue.cpp
+  effects/LensFlare.cpp
+  effects/AnalogTape.cpp
   effects/Mask.cpp
   effects/Negate.cpp
   effects/Pixelate.cpp
   effects/Saturation.cpp
+  effects/Sharpen.cpp
+  effects/Shadow.cpp
   effects/Shift.cpp
+  effects/SphericalProjection.cpp
+  effects/Timer.cpp
+  effects/DenoiseImage.cpp
+  effects/Distort.cpp
   effects/Wave.cpp
+  audio_effects/PitchShift.cpp
   audio_effects/STFT.cpp
   audio_effects/Noise.cpp
   audio_effects/Delay.cpp
@@ -158,6 +188,10 @@ set(CMAKE_MACOSX_RPATH 0)
 ############### CREATE LIBRARY #################
 # Create shared openshot library
 add_library(openshot SHARED)
+target_include_directories(openshot SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/thirdparty/signalsmith")
+if(ENABLE_GPU_FRAME)
+  target_compile_definitions(openshot PUBLIC OPENSHOT_ENABLE_GPU_FRAME=1)
+endif()
 
 target_sources(openshot PRIVATE
   ${OPENSHOT_SOURCES}
@@ -183,11 +217,34 @@ target_include_directories(openshot
     $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/libopenshot>)
 
+if(OPENSHOT_WAYLAND_CAPTURE)
+  target_compile_definitions(openshot PRIVATE HAVE_WAYLAND_CAPTURE_PLUGIN=1)
+  target_link_libraries(openshot PRIVATE ${CMAKE_DL_LIBS})
+
+  # PipeWire is optional at runtime. Keeping it in a module prevents the
+  # dynamic loader from rejecting libopenshot on X11 or older Linux systems
+  # that do not provide the PipeWire 0.3 client ABI.
+  add_library(openshot-wayland-capture MODULE WaylandScreenCaptureReader.cpp)
+  target_include_directories(openshot-wayland-capture PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_BINARY_DIR})
+  target_link_libraries(openshot-wayland-capture PRIVATE
+    openshot
+    PkgConfig::PC_PIPEWIRE
+    PkgConfig::PC_LIBSPA
+    PkgConfig::PC_GIO
+    PkgConfig::PC_GIO_UNIX)
+  set_target_properties(openshot-wayland-capture PROPERTIES
+    BUILD_RPATH "$ORIGIN"
+    INSTALL_RPATH "$ORIGIN")
+endif()
+add_feature_info("Wayland screen capture" OPENSHOT_WAYLAND_CAPTURE "Use the optional xdg-desktop-portal and PipeWire capture module")
+
 ################# LIBOPENSHOT-AUDIO ###################
 # Find JUCE-based openshot Audio libraries
 if(NOT TARGET OpenShot::Audio)
   # Only load if necessary (not for integrated builds)
-  find_package(OpenShotAudio 0.2.0 REQUIRED)
+  find_package(OpenShotAudio 1.1.0 REQUIRED)
 endif()
 target_link_libraries(openshot PUBLIC OpenShot::Audio)
 
@@ -232,15 +289,20 @@ if (ENABLE_MAGICK)
 
     # Add optional ImageMagic-dependent sources
     target_sources(openshot PRIVATE
+      MagickUtilities.cpp
       ImageReader.cpp
       ImageWriter.cpp
-      TextReader.cpp)
+      TextReader.cpp
+    )
 
     # define a preprocessor macro (used in the C++ source)
     target_compile_definitions(openshot PUBLIC USE_IMAGEMAGICK=1)
 
     # Link with ImageMagick library
     target_link_libraries(openshot PUBLIC ImageMagick::Magick++)
+    if(TARGET ImageMagick::MagickCore)
+      target_link_libraries(openshot PUBLIC ImageMagick::MagickCore)
+    endif()
 
     set(HAVE_IMAGEMAGICK TRUE CACHE BOOL "Building with ImageMagick support" FORCE)
     mark_as_advanced(HAVE_IMAGEMAGICK)
@@ -282,36 +344,169 @@ if (TARGET jsoncpp_lib)
   target_link_libraries(openshot PUBLIC jsoncpp_lib)
 endif ()
 
-################# QT5 ###################
-# Find QT5 libraries
+
+###
+### Resvg, the Rust SVG library
+###
+
+# Migrate some legacy variable names
+if(DEFINED RESVGDIR AND NOT DEFINED Resvg_ROOT)
+  set(Resvg_ROOT ${RESVGDIR})
+endif()
+if(DEFINED ENV{RESVGDIR} AND NOT DEFINED Resvg_ROOT)
+  set(Resvg_ROOT $ENV{RESVGDIR})
+endif()
+
+# Find resvg library (used for rendering svg files)
+find_package(Resvg)
+
+# Include resvg headers (optional SVG library)
+if (TARGET Resvg::Resvg)
+  #include_directories(${Resvg_INCLUDE_DIRS})
+  target_link_libraries(openshot PUBLIC Resvg::Resvg)
+
+  target_compile_definitions(openshot PUBLIC USE_RESVG=1)
+
+  set(HAVE_RESVG TRUE CACHE BOOL "Building with Resvg support" FORCE)
+  mark_as_advanced(HAVE_RESVG)
+else()
+  set(HAVE_RESVG FALSE CACHE BOOL "Building with Resvg support" FORCE)
+endif()
+
+###
+### Qt Toolkit
+###
+
+set(USE_QT6 "AUTO" CACHE STRING "Select Qt major version (AUTO, ON=Qt6, OFF=Qt5)")
+set_property(CACHE USE_QT6 PROPERTY STRINGS AUTO ON OFF)
+
 set(_qt_components Core Gui Widgets)
-find_package(Qt5 COMPONENTS ${_qt_components} REQUIRED)
+
+# We also need QtSvg unless we have Resvg insetead.
+if(NOT HAVE_RESVG)
+  list(APPEND _qt_components Svg)
+endif()
+
+# Qt6 packages require newer CMake; gate support so older systems still build Qt5.
+set(_qt6_allowed TRUE)
+if(CMAKE_VERSION VERSION_LESS "3.16")
+  set(_qt6_allowed FALSE)
+  if(USE_QT6 STREQUAL "ON")
+    message(FATAL_ERROR "USE_QT6=ON requires CMake 3.16 or newer")
+  endif()
+endif()
+if(USE_QT6 STREQUAL "OFF")
+  set(_qt6_allowed FALSE)
+endif()
+
+set(_qt_selection "")
+if(USE_QT6 STREQUAL "ON")
+  if(NOT _qt6_allowed)
+    message(FATAL_ERROR "Qt6 support disabled by CMake version; set USE_QT6=OFF or upgrade CMake")
+  endif()
+  set(_qt_selection "Qt6")
+elseif(USE_QT6 STREQUAL "OFF")
+  set(_qt_selection "Qt5")
+else()
+  if(_qt6_allowed)
+    find_package(Qt6 COMPONENTS Core QUIET)
+    if(Qt6_FOUND)
+      set(_qt_selection "Qt6")
+    endif()
+  endif()
+  if(NOT _qt_selection)
+    set(_qt_selection "Qt5")
+  endif()
+endif()
+
+if(_qt_selection STREQUAL "Qt6")
+  set(QT_VERSION_MAJOR 6)
+else()
+  set(QT_VERSION_MAJOR 5)
+endif()
+
+find_package(Qt${QT_VERSION_MAJOR} COMPONENTS ${_qt_components} REQUIRED)
 
 foreach(_qt_comp IN LISTS _qt_components)
-  if(TARGET Qt5::${_qt_comp})
-    target_link_libraries(openshot PUBLIC Qt5::${_qt_comp})
+  if(TARGET Qt${QT_VERSION_MAJOR}::${_qt_comp})
+    target_link_libraries(openshot PUBLIC Qt${QT_VERSION_MAJOR}::${_qt_comp})
   endif()
 endforeach()
 
+string(REPLACE ";" ", " _qt_comp_list "${_qt_components}")
+message(STATUS "Found Qt${QT_VERSION_MAJOR} ${Qt${QT_VERSION_MAJOR}Core_VERSION_STRING} (components: ${_qt_comp_list})")
+
 # Keep track of Qt version, to embed in our version header
-set(QT_VERSION_STR ${Qt5Core_VERSION_STRING} CACHE STRING "Qt version linked with" FORCE)
+set(QT_VERSION_STR ${Qt${QT_VERSION_MAJOR}Core_VERSION_STRING} CACHE STRING "Qt version linked with" FORCE)
 mark_as_advanced(QT_VERSION_STR)
+
+target_sources(openshot PRIVATE GpuMetrics.cpp)
 
 ################### FFMPEG #####################
 # Find FFmpeg libraries (used for video encoding / decoding)
 find_package(FFmpeg REQUIRED
-  COMPONENTS avcodec avformat avutil swscale
-  OPTIONAL_COMPONENTS swresample avresample
+  COMPONENTS avcodec avdevice avformat avutil swscale
+  OPTIONAL_COMPONENTS swresample
 )
 
-set(all_comps avcodec avformat avutil swscale)
+set(all_comps avcodec avdevice avformat avutil swscale)
+if(ENABLE_GPU_FRAME)
+  find_package(FFmpeg REQUIRED COMPONENTS avfilter)
+  list(APPEND all_comps avfilter)
+  target_sources(openshot PRIVATE VulkanFrameImage.cpp)
+  target_sources(openshot PRIVATE VulkanCompositor.cpp VulkanPainter.cpp)
+  target_sources(openshot PRIVATE GpuDevices.cpp VulkanLoader.cpp)
+  if(APPLE)
+    enable_language(OBJCXX)
+    target_sources(openshot PRIVATE MacVulkanInterop.mm MacVulkanInterop.h Qt/VulkanOpenGLPresenterMac.mm Qt/VulkanOpenGLPresenter.h)
+    set_property(TARGET openshot PROPERTY OBJCXX_STANDARD 17)
+    target_link_libraries(openshot PRIVATE "-framework Foundation" "-framework CoreFoundation" objc "-framework Metal" "-framework CoreVideo" "-framework IOSurface" "-framework OpenGL")
+  else()
+    target_sources(openshot PRIVATE Qt/VulkanOpenGLPresenter.cpp Qt/VulkanOpenGLPresenter.h)
+  endif()
+  find_package(Vulkan REQUIRED)
+  find_program(GLSLANG_VALIDATOR glslangValidator)
+  if(NOT GLSLANG_VALIDATOR)
+    message(FATAL_ERROR "ENABLE_GPU_FRAME requires glslangValidator")
+  endif()
+  # Embed SPIR-V in the library so installed builds need no shader files.
+  set(VULKAN_SHADER_HEADERS)
+  file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/vulkan")
+  foreach(shader affine encode_nv12)
+    set(shader_header "${CMAKE_CURRENT_BINARY_DIR}/vulkan/${shader}.comp.h")
+    add_custom_command(OUTPUT "${shader_header}"
+      COMMAND "${GLSLANG_VALIDATOR}" -V -S comp --vn "openshot_${shader}_spv"
+              -o "${shader_header}" "${CMAKE_CURRENT_SOURCE_DIR}/vulkan/${shader}.comp"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/vulkan/${shader}.comp"
+              "${CMAKE_CURRENT_SOURCE_DIR}/vulkan/effects.glsl" VERBATIM)
+    list(APPEND VULKAN_SHADER_HEADERS "${shader_header}")
+  endforeach()
+  add_custom_target(openshot-vulkan-shaders DEPENDS ${VULKAN_SHADER_HEADERS})
+  add_dependencies(openshot openshot-vulkan-shaders)
+  target_include_directories(openshot PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vulkan")
+  # Vulkan is loaded at runtime (VulkanLoader.cpp), so OpenShot starts without it.
+  # macOS links the MoltenVK it bundles; nothing to load there.
+  target_compile_definitions(openshot PRIVATE VK_NO_PROTOTYPES)
+  if(APPLE)
+    target_link_libraries(openshot PRIVATE Vulkan::Vulkan)
+  else()
+    target_include_directories(openshot PRIVATE ${Vulkan_INCLUDE_DIRS})
+    target_link_libraries(openshot PRIVATE ${CMAKE_DL_LIBS})
+  endif()
+  find_package(PkgConfig QUIET)
+  if(PKG_CONFIG_FOUND)
+    pkg_check_modules(VULKAN_FRAME_PC QUIET vulkan)
+    target_include_directories(openshot PRIVATE ${VULKAN_FRAME_PC_INCLUDE_DIRS})
+  endif()
+endif()
 set(version_comps avcodec avformat avutil)
 
 # Pick a resampler.  Prefer swresample if possible
-if(TARGET FFmpeg::swresample AND ${FFmpeg_avformat_VERSION} VERSION_GREATER "57.0.0")
+if(TARGET FFmpeg::swresample)
   set(resample_lib swresample)
   set(USE_SW TRUE)
 else()
+  find_package(FFmpeg REQUIRED COMPONENTS avresample)
   set(resample_lib avresample)
   set(USE_SW FALSE)
 endif()
@@ -381,82 +576,32 @@ endif()
 target_link_libraries(openshot PUBLIC OpenMP::OpenMP_CXX)
 
 ###
-### ZeroMQ
+### Babl
 ###
 
-# Find ZeroMQ library (used for socket communication & logging)
-find_package(ZeroMQ REQUIRED) # Creates libzmq target
+# Find babl library for colourspace conversion (used for advanced chroma keying
+find_package(babl)
 
-# Some platforms package the header-only cppzmq C++ bindings separately,
-# others (Ubuntu) bundle them in with libzmq itself
-find_package(cppzmq QUIET) # Creates cppzmq target
-
-# Link ZeroMQ library
-if (TARGET libzmq)
-  target_link_libraries(openshot PUBLIC libzmq)
-endif()
-# Include cppzmq headers, if not bundled into libzmq
-if (TARGET cppzmq)
-  target_link_libraries(openshot PUBLIC cppzmq)
+if (babl_FOUND)
+  set(HAVE_BABL TRUE CACHE BOOL "Building with babl support" FORCE)
+  mark_as_advanced(HAVE_BABL)
 endif()
 
-###
-### Resvg, the Rust SVG library
-###
-
-# Migrate some legacy variable names
-if(DEFINED RESVGDIR AND NOT DEFINED Resvg_ROOT)
-  set(Resvg_ROOT ${RESVGDIR})
-endif()
-if(DEFINED ENV{RESVGDIR} AND NOT DEFINED Resvg_ROOT)
-  set(Resvg_ROOT $ENV{RESVGDIR})
-endif()
-
-# Find resvg library (used for rendering svg files)
-find_package(Resvg)
-
-# Include resvg headers (optional SVG library)
-if (TARGET Resvg::Resvg)
-  #include_directories(${Resvg_INCLUDE_DIRS})
-  target_link_libraries(openshot PUBLIC Resvg::Resvg)
-
-  target_compile_definitions(openshot PUBLIC USE_RESVG=1)
-
-  set(HAVE_RESVG TRUE CACHE BOOL "Building with Resvg support" FORCE)
-  mark_as_advanced(HAVE_RESVG)
-endif()
-
-################# BLACKMAGIC DECKLINK ###################
-# Find BlackMagic DeckLinkAPI libraries
-if (ENABLE_BLACKMAGIC)
-  find_package(BlackMagic)
-
-  if (BLACKMAGIC_FOUND)
-    # BlackMagic related files
-    target_sources(openshot PRIVATE
-      DecklinkInput.cpp
-      DecklinkReader.cpp
-      DecklinkOutput.cpp
-      DecklinkWriter.cpp)
-
-    # Include Blackmagic headers (needed for compile)
-    target_include_directories(openshot PRIVATE ${BLACKMAGIC_INCLUDE_DIR})
-
-    # Link libopenshot with BlackMagic libs
-    target_link_libraries(openshot PUBLIC ${BLACKMAGIC_LIBRARY_DIR})
-
-    # define a preprocessor macro (used in the C++)
-    target_compile_definitions(openshot PUBLIC USE_BLACKMAGIC=1)
-  endif()
-endif()
+if (TARGET babl_lib)
+  target_compile_definitions(openshot PUBLIC USE_BABL=1)
+  target_link_libraries(openshot PUBLIC babl_lib)
+endif ()
 
 ################## OPENCV ###################
 if(ENABLE_OPENCV)
-  find_package(OpenCV 4)
+  find_package(OpenCV 5 QUIET)
+  if(NOT OpenCV_FOUND)
+    find_package(OpenCV 4)
+  endif()
   if(NOT OpenCV_FOUND)
     set(ENABLE_OPENCV FALSE CACHE BOOL
       "Build with OpenCV algorithms (requires Protobuf 3)" FORCE)
-    # If we have version 4.5.1, all hope is lost
+  # If we have version 4.5.1, all hope is lost
   elseif(OpenCV_VERSION VERSION_EQUAL "4.5.1")
     message(WARNING [[Incompatible OpenCV version detected
 OpenCV version 4.5.1 contains header errors which make it unable to be used with OpenShot. OpenCV support wil be disabled. Upgrade to OpenCV 4.5.2+ or downgrade to 4.5.0 or earlier, to enable OpenCV.
@@ -464,7 +609,44 @@ See https://github.com/opencv/opencv/issues/19260]])
     set(ENABLE_OPENCV FALSE CACHE BOOL
       "Build with OpenCV algorithms (requires Protobuf 3)" FORCE)
   else()
-    add_subdirectory(protobuf_messages)
+    ###
+    ### Protocol Buffers
+    ###
+    # Config packages include transitive dependencies (such as Abseil).
+    # Keep FindProtobuf for older distributions without a config package.
+    set(protobuf_MODULE_COMPATIBLE TRUE)
+    find_package(Protobuf CONFIG QUIET)
+    if(NOT Protobuf_FOUND)
+      find_package(Protobuf 3 REQUIRED MODULE)
+    endif()
+    if(Protobuf_VERSION VERSION_LESS 3)
+      message(FATAL_ERROR "Protobuf 3 or newer is required")
+    endif()
+
+    # Create a target for libprotobuf, if necessary (CMake < 3.9)
+    if(NOT TARGET protobuf::libprotobuf)
+      add_library(protobuf_TARGET INTERFACE)
+      target_include_directories(protobuf_TARGET
+        INTERFACE ${Protobuf_INCLUDE_DIRS})
+      target_link_libraries(protobuf_TARGET INTERFACE ${Protobuf_LIBRARIES})
+      add_library(protobuf::libprotobuf ALIAS protobuf_TARGET)
+    endif()
+
+    # Create libopenshot_protobuf
+    set(PROTOBUF_SOURCES
+      "objdetectdata.proto"
+      "stabilizedata.proto"
+      "trackerdata.proto"
+    )
+    PROTOBUF_GENERATE_CPP(ProtoSources ProtoHeaders ${PROTOBUF_SOURCES})
+
+    target_sources(openshot PRIVATE ${ProtoSources} ${ProtoHeaders})
+    target_link_libraries(openshot PRIVATE protobuf::libprotobuf)
+
+    ###
+    ### OpenCV
+    ###
+
     # Add OpenCV source files
     target_sources(openshot PRIVATE
       ${OPENSHOT_CV_SOURCES}
@@ -476,7 +658,6 @@ See https://github.com/opencv/opencv/issues/19260]])
       opencv_highgui
       opencv_dnn
       opencv_tracking
-      openshot_protobuf
     )
     set(HAVE_OPENCV TRUE CACHE BOOL "Building with OpenCV effects" FORCE)
     mark_as_advanced(HAVE_OPENCV)
@@ -501,15 +682,15 @@ if(DEFINED PROFILER)
 endif()
 
 if(WIN32)
-  # Required for exception handling on Windows
-  target_link_libraries(openshot PUBLIC "imagehlp" "dbghelp" )
+  # Required for exception handling and DirectShow device enumeration on Windows
+  target_link_libraries(openshot PUBLIC "imagehlp" "dbghelp" "ole32" "oleaut32" "strmiids" "uuid" )
 endif()
 
 ###
 ### INSTALL HEADERS & LIBRARY
 ###
 
-# Install primary library
+# Install libraries
 install(TARGETS openshot
   COMPONENT runtime
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -517,15 +698,30 @@ install(TARGETS openshot
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
   INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/libopenshot)
 
+if(OPENSHOT_WAYLAND_CAPTURE)
+  install(TARGETS openshot-wayland-capture
+    COMPONENT runtime
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+endif()
+
 install(DIRECTORY .
   COMPONENT devel
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/libopenshot
   FILES_MATCHING PATTERN "*.h"
 )
 
+
+# Include the notices for the bundled pitch-shifting implementation with binaries.
+install(FILES "${PROJECT_SOURCE_DIR}/thirdparty/signalsmith/README.md"
+  COMPONENT runtime DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/libopenshot/thirdparty/signalsmith")
+foreach(signalsmith_part stretch signalsmith-linear)
+  install(FILES "${PROJECT_SOURCE_DIR}/thirdparty/signalsmith/${signalsmith_part}/LICENSE.txt"
+    COMPONENT runtime DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/libopenshot/thirdparty/signalsmith/${signalsmith_part}")
+endforeach()
+
 # On Windows, we copy project output DLLs into the tests dir
 # so that the unit test executables can find them
-if(CMAKE_VERSION VERSION_GREATER 3.13 AND WIN32)
+if(CMAKE_VERSION VERSION_GREATER 3.13 AND WIN32 AND BUILD_TESTING)
   # Copy the DLLs immediately after they're built
   add_custom_command(TARGET openshot POST_BUILD
     COMMAND
@@ -537,6 +733,7 @@ if(CMAKE_VERSION VERSION_GREATER 3.13 AND WIN32)
     COMMENT
       "Copying libopenshot DLL to unit test directory"
   )
+
   # Also copy libopenshot-audio DLL
   get_target_property(AUDIO_LIB_PATH OpenShot::Audio LOCATION)
   add_custom_target(test-install-audio-dll ALL

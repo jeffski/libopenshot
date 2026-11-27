@@ -6,27 +6,9 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_CAPTION_EFFECT_H
 #define OPENSHOT_CAPTION_EFFECT_H
@@ -34,6 +16,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <QImage>
 #include <QFont>
 #include <QFontMetrics>
 #include <QRegularExpression>
@@ -61,6 +44,10 @@ private:
 	QFontMetrics* metrics;       ///< Font metrics object
 	QFont* font; 			     ///< QFont object
 	bool is_dirty;
+	QByteArray overlay_key; ///< Evaluated drawing commands for the last caption.
+	QImage overlay_cache; ///< Last caption raster; stable cache key reuses the shared Vulkan upload.
+
+	bool RendersOnVulkan() const override { return true; }
 
 	/// Init effect settings
 	void init_effect_details();
@@ -79,9 +66,11 @@ public:
 	Keyframe stroke_width;  ///< Width of text border / stroke
 	Keyframe font_size;     ///< Font size in points
 	Keyframe font_alpha;     ///< Font color alpha
+	Keyframe line_spacing;	 ///< Distance between lines (1.0 default / 100%)
 	Keyframe left;		 ///< Size of left bar
 	Keyframe top;		 ///< Size of top bar
 	Keyframe right;		 ///< Size of right bar
+	Keyframe bottom;	 ///< Size of bottom bar
 	Keyframe fade_in;		 ///< Fade in per caption (# of seconds)
 	Keyframe fade_out;		 ///< Fade in per caption (# of seconds)
 	std::string font_name;	///< Font string

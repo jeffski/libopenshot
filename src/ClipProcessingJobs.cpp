@@ -7,27 +7,9 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "ClipProcessingJobs.h"
 
@@ -36,6 +18,26 @@ namespace openshot {
 // Constructor responsible to choose processing type and apply to clip
 ClipProcessingJobs::ClipProcessingJobs(std::string processingType, std::string processInfoJson) :
 processingType(processingType), processInfoJson(processInfoJson){
+}
+
+std::string ClipProcessingJobs::ValidateONNXModel(std::string modelPath){
+#ifdef USE_OPENCV
+    return CVObjectDetection::ValidateONNXModel(modelPath);
+#else
+    return "OpenShot was not compiled with OpenCV support.";
+#endif
+}
+
+std::shared_ptr<Frame> ClipProcessingJobs::PreviewObjectMask(std::string processInfoJson, std::shared_ptr<Frame> frame){
+#ifdef USE_OPENCV
+    ProcessingController controller;
+    CVObjectMask objectMask(processInfoJson, controller);
+    return objectMask.PreviewSeedMask(frame);
+#else
+    (void)processInfoJson;
+    (void)frame;
+    return std::shared_ptr<Frame>();
+#endif
 }
 
 void ClipProcessingJobs::processClip(Clip& clip, std::string json){
@@ -48,8 +50,11 @@ void ClipProcessingJobs::processClip(Clip& clip, std::string json){
     if(processingType == "Tracker"){
         t = std::thread(&ClipProcessingJobs::trackClip, this, std::ref(clip), std::ref(this->processingController));
     }
-    if(processingType == "Object Detector"){
+    if(processingType == "ObjectDetection"){
         t = std::thread(&ClipProcessingJobs::detectObjectsClip, this, std::ref(clip), std::ref(this->processingController));
+    }
+    if(processingType == "ObjectMask"){
+        t = std::thread(&ClipProcessingJobs::maskObjectClip, this, std::ref(clip), std::ref(this->processingController));
     }
 }
 
@@ -93,6 +98,21 @@ void ClipProcessingJobs::detectObjectsClip(Clip& clip, ProcessingController& con
         // Save object detection data
         objDetector.SaveObjDetectedData();
         // tells to UI that the processing finished
+        controller.SetFinished(true);
+    }
+}
+
+// Apply object segmentation mask to clip
+void ClipProcessingJobs::maskObjectClip(Clip& clip, ProcessingController& controller){
+	CVObjectMask objectMask(processInfoJson, controller);
+    objectMask.maskClip(clip);
+
+    if(controller.ShouldStop()){
+        controller.SetFinished(true);
+        return;
+    }
+    else{
+        objectMask.SaveObjMaskData();
         controller.SetFinished(true);
     }
 }

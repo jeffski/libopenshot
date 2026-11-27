@@ -7,79 +7,57 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include <string>
 #include <memory>
-#include <fstream>
 #include <iostream>
+#include <algorithm>
 
 #include "effects/Tracker.h"
 #include "Exceptions.h"
 #include "Timeline.h"
+#include "trackerdata.pb.h"
 
 #include <google/protobuf/util/time_util.h>
 
 #include <QImage>
 #include <QPainter>
+#include <QPen>
+#include <QBrush>
 #include <QRectF>
+
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+#include "VulkanCompositor.h"
+#include "VulkanFrameImage.h"
+#include "Logger.h"
+#endif
 
 using namespace std;
 using namespace openshot;
 using google::protobuf::util::TimeUtil;
 
-/// Blank constructor, useful when using Json to load the effect properties
-Tracker::Tracker(std::string clipTrackerDataPath)
-{
-    // Init effect properties
-	init_effect_details();
-    // Instantiate a TrackedObjectBBox object and point to it
-	TrackedObjectBBox trackedDataObject;
-	trackedData = std::make_shared<TrackedObjectBBox>(trackedDataObject);
-	// Tries to load the tracked object's data from protobuf file
-	trackedData->LoadBoxData(clipTrackerDataPath);
-	ClipBase* parentClip = this->ParentClip();
-	trackedData->ParentClip(parentClip);
-	trackedData->Id(std::to_string(0));
-	// Insert TrackedObject with index 0 to the trackedObjects map
-	trackedObjects.insert({0, trackedData});
-}
 
 // Default constructor
 Tracker::Tracker()
 {
-	// Init effect properties
+	// Initialize effect metadata
 	init_effect_details();
-	// Instantiate a TrackedObjectBBox object and point to it
-	TrackedObjectBBox trackedDataObject;
-	trackedData = std::make_shared<TrackedObjectBBox>(trackedDataObject);
-	ClipBase* parentClip = this->ParentClip();
-	trackedData->ParentClip(parentClip);
-	trackedData->Id(std::to_string(0));
-	// Insert TrackedObject with index 0 to the trackedObjects map
-	trackedObjects.insert({0, trackedData});
-}
 
+	// Create a placeholder object so we always have index 0 available
+	trackedData = std::make_shared<TrackedObjectBBox>();
+	trackedData->ParentClip(this->ParentClip());
+
+	// Seed our map with a single entry at index 0
+	trackedObjects.clear();
+	trackedObjects.emplace(0, trackedData);
+
+	// Assign ID to the placeholder object
+	if (trackedData)
+	trackedData->Id(Id() + "-0");
+}
 
 // Init effect settings
 void Tracker::init_effect_details()
@@ -102,150 +80,125 @@ void Tracker::init_effect_details()
 // modified openshot::Frame object
 std::shared_ptr<Frame> Tracker::GetFrame(std::shared_ptr<Frame> frame, int64_t frame_number)
 {
-    // Get the frame's image
-	cv::Mat frame_image = frame->GetImageCV();
-
-	// Initialize the Qt rectangle that will hold the positions of the bounding-box
-	QRectF boxRect;
-	// Initialize the image of the TrackedObject child clip
-	std::shared_ptr<QImage> childClipImage = nullptr;
-
-    // Check if frame isn't NULL
-    if(!frame_image.empty() && 
-		trackedData->Contains(frame_number) &&
-		trackedData->visible.GetValue(frame_number) == 1)
-	{
-		// Get the width and height of the image
-		float fw = frame_image.size().width;
-		float fh = frame_image.size().height;
-
-		// Get the bounding-box of given frame
-		BBox fd = trackedData->GetBox(frame_number);
-
-        // Check if track data exists for the requested frame
-        if (trackedData->draw_box.GetValue(frame_number) == 1) 
-		{
-			std::vector<int> stroke_rgba = trackedData->stroke.GetColorRGBA(frame_number);
-			int stroke_width = trackedData->stroke_width.GetValue(frame_number);
-			float stroke_alpha = trackedData->stroke_alpha.GetValue(frame_number);
-			std::vector<int> bg_rgba = trackedData->background.GetColorRGBA(frame_number);
-			float bg_alpha = trackedData->background_alpha.GetValue(frame_number);
-
-			// Create a rotated rectangle object that holds the bounding box
-			cv::RotatedRect box ( cv::Point2f( (int)(fd.cx*fw), (int)(fd.cy*fh) ), 
-								  cv::Size2f( (int)(fd.width*fw), (int)(fd.height*fh) ), 
-								  (int) (fd.angle) );
-
-			DrawRectangleRGBA(frame_image, box, bg_rgba, bg_alpha, 1, true);
-			DrawRectangleRGBA(frame_image, box, stroke_rgba, stroke_alpha, stroke_width, false);
-		}
-		
-		// Get the image of the Tracked Object' child clip
-		if (trackedData->ChildClipId() != ""){
-			// Cast the parent timeline of this effect 
-			Timeline* parentTimeline = (Timeline *) ParentTimeline();
-			if (parentTimeline){
-				// Get the Tracked Object's child clip
-				Clip* childClip = parentTimeline->GetClip(trackedData->ChildClipId());
-				if (childClip){
-					// Get the image of the child clip for this frame
-					std::shared_ptr<Frame> f(new Frame(1, frame->GetWidth(), frame->GetHeight(), "#00000000"));
-					std::shared_ptr<Frame> childClipFrame = childClip->GetFrame(f, frame_number);
-					childClipImage = childClipFrame->GetImage();
-
-					// Set the Qt rectangle with the bounding-box properties
-					boxRect.setRect((int)((fd.cx-fd.width/2)*fw),
-									(int)((fd.cy - fd.height/2)*fh),
-									(int)(fd.width*fw),
-									(int)(fd.height*fh) );
-				}
-			}
-		}
-	
+    if(!frame || !trackedData || !trackedData->Contains(frame_number) ||
+        trackedData->visible.GetValue(frame_number)!=1 || trackedData->draw_box.GetValue(frame_number)!=1)
+        return frame;
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+    if(VulkanRenderingEnabled()) {
+        try {
+            auto surface=frame->GetDeferredImage();
+            if(!surface && ParentClip() && frame->has_image_data) surface=UploadVulkanImage(*frame->GetImage());
+            if(surface) {
+                const int w=surface->GetWidth(),h=surface->GetHeight();
+                const auto box=trackedData->GetBox(frame_number);
+                const QRectF rect((box.cx-box.width/2)*w,(box.cy-box.height/2)*h,box.width*w,box.height*h);
+                const auto stroke=trackedData->stroke.GetColorRGBA(frame_number),background=trackedData->background.GetColorRGBA(frame_number);
+                const float stroke_alpha=trackedData->stroke_alpha.GetValue(frame_number),background_alpha=trackedData->background_alpha.GetValue(frame_number),
+                    corner=trackedData->background_corner.GetValue(frame_number);
+                QPen pen(QColor(stroke[0],stroke[1],stroke[2],int(255*stroke_alpha)));
+                pen.setWidthF(trackedData->ScaledStrokeWidth(frame_number,w,h));
+                const auto path=RoundedRectVulkanPath(rect,corner);
+                const QColor fill(background[0],background[1],background[2],int(255*background_alpha));
+                auto result=corner<=0?FillVulkanRect(surface,rect,fill):PaintVulkanPath(surface,path,fill);
+                result=StrokeVulkanPath(result,path,pen);
+                frame->AddDeferredImage(result);return frame;
+            }
+        } catch(const std::exception& error) {
+            Logger::Instance()->Log(std::string("Vulkan Tracker CPU fallback: ")+error.what());
+        }
     }
+#endif
+    auto frame_image=frame->GetImage();
+    if(!frame_image || frame_image->isNull()) return frame;
 
-	// Set image with drawn box to frame
-    // If the input image is NULL or doesn't have tracking data, it's returned as it came
-	frame->SetImageCV(frame_image);
+	QPainter painter(frame_image.get());
+	painter.setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform);
 
-	// Set the bounding-box image with the Tracked Object's child clip image
-	if (childClipImage){
-		// Get the frame image
-		QImage frameImage = *(frame->GetImage());
+	// Draw the box
+	BBox fd = trackedData->GetBox(frame_number);
+	QRectF boxRect(
+		(fd.cx - fd.width/2) * frame_image->width(),
+		(fd.cy - fd.height/2) * frame_image->height(),
+		fd.width * frame_image->width(),
+		fd.height * frame_image->height()
+	);
 
-		// Set a Qt painter to the frame image
-		QPainter painter(&frameImage);
+	if (trackedData->draw_box.GetValue(frame_number) == 1)
+	{
+		auto stroke_rgba   = trackedData->stroke.GetColorRGBA(frame_number);
+		float stroke_alpha = trackedData->stroke_alpha.GetValue(frame_number);
+		auto bg_rgba       = trackedData->background.GetColorRGBA(frame_number);
+		float bg_alpha     = trackedData->background_alpha.GetValue(frame_number);
+		float bg_corner    = trackedData->background_corner.GetValue(frame_number);
 
-		// Draw the child clip image inside the bounding-box
-		painter.drawImage(boxRect, *childClipImage, QRectF(0, 0, frameImage.size().width(),  frameImage.size().height()));
+		QPen pen(QColor(
+			stroke_rgba[0], stroke_rgba[1], stroke_rgba[2],
+			int(255 * stroke_alpha)
+		));
+		pen.setWidthF(trackedData->ScaledStrokeWidth(
+			frame_number, frame_image->width(), frame_image->height()));
+		painter.setPen(pen);
 
-		// Set the frame image as the composed image
-		frame->AddImage(std::make_shared<QImage>(frameImage));
+		QBrush brush(QColor(
+			bg_rgba[0], bg_rgba[1], bg_rgba[2],
+			int(255 * bg_alpha)
+		));
+		painter.setBrush(brush);
+
+		painter.drawRoundedRect(boxRect, bg_corner, bg_corner);
 	}
 
+	painter.end();
 	return frame;
 }
 
-void Tracker::DrawRectangleRGBA(cv::Mat &frame_image, cv::RotatedRect box, std::vector<int> color, float alpha, int thickness, bool is_background){
-	// Get the bouding box vertices
-	cv::Point2f vertices2f[4];
-	box.points(vertices2f);
-
-	// TODO: take a rectangle of frame_image by refencence and draw on top of that to improve speed
-	// select min enclosing rectangle to draw on a small portion of the image
-	// cv::Rect rect  = box.boundingRect();
-	// cv::Mat image = frame_image(rect)
-
-	if(is_background){
-		cv::Mat overlayFrame;
-		frame_image.copyTo(overlayFrame);
-
-		// draw bounding box background
-		cv::Point vertices[4];
-		for(int i = 0; i < 4; ++i){
-			vertices[i] = vertices2f[i];}
-
-		cv::Rect rect  = box.boundingRect();
-		cv::fillConvexPoly(overlayFrame, vertices, 4, cv::Scalar(color[2],color[1],color[0]), cv::LINE_AA);
-		// add opacity
-		cv::addWeighted(overlayFrame, 1-alpha, frame_image, alpha, 0, frame_image);
-	}
-	else{
-		cv::Mat overlayFrame;
-		frame_image.copyTo(overlayFrame);
-
-		// Draw bounding box 
-		for (int i = 0; i < 4; i++)
-		{
-			cv::line(overlayFrame, vertices2f[i], vertices2f[(i+1)%4], cv::Scalar(color[2],color[1],color[0]),
-						thickness, cv::LINE_AA);
-		}
-
-		// add opacity
-		cv::addWeighted(overlayFrame, 1-alpha, frame_image, alpha, 0, frame_image);
-	}
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+std::shared_ptr<const FrameImage> Tracker::TrackedObjectMaskSurface(std::shared_ptr<const FrameImage> target,int64_t frame_number) const {
+    if(!target) return {};
+    auto result=RenderVulkanImage(target,nullptr,target->GetWidth(),target->GetHeight(),QTransform(),0,Qt::black);
+    for(const auto& item:trackedObjects) {
+        const auto object=std::dynamic_pointer_cast<TrackedObjectBBox>(item.second);
+        if(!object || !object->Contains(frame_number) || object->visible.GetValue(frame_number)!=1) continue;
+        const auto box=object->GetBox(frame_number);
+        if(box.width<=0 || box.height<=0 || box.cx<0 || box.cy<0) continue;
+        const double w=box.width*target->GetWidth(),h=box.height*target->GetHeight(),
+            x=(box.cx-box.width/2.0)*target->GetWidth(),y=(box.cy-box.height/2.0)*target->GetHeight(),
+            corner=object->background_corner.GetValue(frame_number);
+        QPainterPath path;
+        if(std::abs(box.angle)>.0001f) {
+            path.addRoundedRect(QRectF(-w/2,-h/2,w,h),corner,corner);
+            QTransform transform;transform.translate(x+w/2,y+h/2);transform.rotate(box.angle);path=transform.map(path);
+        } else path.addRoundedRect(QRectF(x,y,w,h),corner,corner);
+        result=PaintVulkanPath(result,path,Qt::white);
+    }
+    return result;
 }
+#endif
 
 // Get the indexes and IDs of all visible objects in the given frame
-std::string Tracker::GetVisibleObjects(int64_t frame_number) const{
-    
-    // Initialize the JSON objects
-    Json::Value root;
-    root["visible_objects_index"] = Json::Value(Json::arrayValue);
-    root["visible_objects_id"] = Json::Value(Json::arrayValue);
+std::string Tracker::GetVisibleObjects(int64_t frame_number) const
+{
+	Json::Value root;
+	root["visible_objects_index"] = Json::Value(Json::arrayValue);
+	root["visible_objects_id"]    = Json::Value(Json::arrayValue);
 
-    // Iterate through the tracked objects
-    for (const auto& trackedObject : trackedObjects){
-        // Get the tracked object JSON properties for this frame
-        Json::Value trackedObjectJSON = trackedObject.second->PropertiesJSON(frame_number);
-        if (trackedObjectJSON["visible"]["value"].asBool()){
-            // Save the object's index and ID if it's visible in this frame
-            root["visible_objects_index"].append(trackedObject.first);
-            root["visible_objects_id"].append(trackedObject.second->Id());
-        }
-    }
+	if (trackedObjects.empty())
+		return root.toStyledString();
 
-    return root.toStyledString();
+	for (auto const& kv : trackedObjects) {
+		auto ptr = kv.second;
+		if (!ptr) continue;
+
+		// Directly get the Json::Value for this object's properties
+		Json::Value propsJson = ptr->PropertiesJSON(frame_number);
+
+		if (propsJson["visible"]["value"].asBool()) {
+			root["visible_objects_index"].append(kv.first);
+			root["visible_objects_id"].append(ptr->Id());
+		}
+	}
+
+	return root.toStyledString();
 }
 
 // Generate JSON string of this object
@@ -264,18 +217,18 @@ Json::Value Tracker::JsonValue() const {
 	// Save the effect's properties on root
 	root["type"] = info.class_name;
 	root["protobuf_data_path"] = protobuf_data_path;
-    root["BaseFPS"]["num"] = BaseFPS.num;
+	root["BaseFPS"]["num"] = BaseFPS.num;
 	root["BaseFPS"]["den"] = BaseFPS.den;
 	root["TimeScale"] = this->TimeScale;
 
 	// Add trackedObjects IDs to JSON
 	Json::Value objects;
-    for (auto const& trackedObject : trackedObjects){
-        Json::Value trackedObjectJSON = trackedObject.second->JsonValue();
-        // add object json 
-        objects[trackedObject.second->Id()] = trackedObjectJSON;
-    }
-    root["objects"] = objects;
+	for (auto const& trackedObject : trackedObjects){
+		Json::Value trackedObjectJSON = trackedObject.second->JsonValue();
+		// add object json
+		objects[trackedObject.second->Id()] = trackedObjectJSON;
+	}
+	root["objects"] = objects;
 
 	// return JsonValue
 	return root;
@@ -305,78 +258,98 @@ void Tracker::SetJsonValue(const Json::Value root) {
 	// Set parent data
 	EffectBase::SetJsonValue(root);
 
-	if(!root["type"].isNull())
-		info.class_name = root["type"].asString();
-
-	if (!root["BaseFPS"].isNull() && root["BaseFPS"].isObject())
-	{
+	if (!root["BaseFPS"].isNull()) {
 		if (!root["BaseFPS"]["num"].isNull())
-		{
-			BaseFPS.num = (int) root["BaseFPS"]["num"].asInt();
-		}	
+			BaseFPS.num = root["BaseFPS"]["num"].asInt();
 		if (!root["BaseFPS"]["den"].isNull())
-		{
-			BaseFPS.den = (int) root["BaseFPS"]["den"].asInt();
+			BaseFPS.den = root["BaseFPS"]["den"].asInt();
+	}
+
+	if (!root["TimeScale"].isNull()) {
+		TimeScale = root["TimeScale"].asDouble();
+	}
+
+	if (!root["protobuf_data_path"].isNull()) {
+		std::string new_path = root["protobuf_data_path"].asString();
+		if (protobuf_data_path != new_path || trackedData->GetLength() == 0) {
+			protobuf_data_path = new_path;
+			if (!trackedData->LoadBoxData(protobuf_data_path)) {
+				std::clog << "Invalid protobuf data path " << protobuf_data_path << '\n';
+				protobuf_data_path.clear();
+			}
+			else {
+				// prefix "<effectUUID>-<index>" for each entry
+				for (auto& kv : trackedObjects) {
+					auto idx = kv.first;
+					auto ptr = kv.second;
+					if (ptr) {
+						std::string prefix = this->Id();
+						if (!prefix.empty())
+							prefix += "-";
+						ptr->Id(prefix + std::to_string(idx));
+					}
+				}
+			}
 		}
 	}
-	
-	if (!root["TimeScale"].isNull())
-		TimeScale = (double) root["TimeScale"].asDouble();
 
-	// Set data from Json (if key is found)
-	if (!root["protobuf_data_path"].isNull() && protobuf_data_path.size() <= 1)
-	{
-		protobuf_data_path = root["protobuf_data_path"].asString();
-		if(!trackedData->LoadBoxData(protobuf_data_path))
+	// then any per-object JSON overrides...
+	if (!root["objects"].isNull()) {
+		// Iterate over the supplied objects (indexed by id or position)
+		const auto memberNames = root["objects"].getMemberNames();
+		for (const auto& name : memberNames)
 		{
-			std::clog << "Invalid protobuf data path " << protobuf_data_path << '\n';
-			protobuf_data_path = "";
+			// Determine the numeric index of this object
+			int index = -1;
+			bool numeric_key = std::all_of(name.begin(), name.end(), ::isdigit);
+			if (numeric_key) {
+				index = std::stoi(name);
+			}
+			else
+			{
+				size_t pos = name.find_last_of('-');
+				if (pos != std::string::npos) {
+					try {
+						index = std::stoi(name.substr(pos + 1));
+					} catch (...) {
+						index = -1;
+					}
+				}
+			}
+
+			auto obj_it = trackedObjects.find(index);
+			if (obj_it != trackedObjects.end() && obj_it->second) {
+				// Update object id if provided as a non-numeric key
+				if (!numeric_key)
+					obj_it->second->Id(name);
+				obj_it->second->SetJsonValue(root["objects"][name]);
+			}
 		}
 	}
 
-    if (!root["objects"].isNull()){
-        for (auto const& trackedObject : trackedObjects){
-            std::string obj_id = std::to_string(trackedObject.first);
-            if(!root["objects"][obj_id].isNull()){
-                trackedObject.second->SetJsonValue(root["objects"][obj_id]);
-            }
-        }
+	// Set the tracked object's ids (legacy format)
+	if (!root["objects_id"].isNull()) {
+		for (auto& kv : trackedObjects) {
+			if (!root["objects_id"][kv.first].isNull())
+				kv.second->Id(root["objects_id"][kv.first].asString());
+		}
 	}
-		
-    // Set the tracked object's ids
-    if (!root["objects_id"].isNull()){
-        for (auto const& trackedObject : trackedObjects){
-            Json::Value trackedObjectJSON;
-            trackedObjectJSON["box_id"] = root["objects_id"][trackedObject.first].asString();
-            trackedObject.second->SetJsonValue(trackedObjectJSON);
-        }
-    }
-
-	return;
 }
 
 // Get all properties for a specific frame
 std::string Tracker::PropertiesJSON(int64_t requested_frame) const {
-	
+
 	// Generate JSON properties list
-	Json::Value root;
+	Json::Value root = BasePropertiesJSON(requested_frame);
 
 	// Add trackedObject properties to JSON
 	Json::Value objects;
 	for (auto const& trackedObject : trackedObjects){
 		Json::Value trackedObjectJSON = trackedObject.second->PropertiesJSON(requested_frame);
-		// add object json 
-        objects[trackedObject.second->Id()] = trackedObjectJSON;
-    }
+		// add object json
+		objects[trackedObject.second->Id()] = trackedObjectJSON;
+	}
 	root["objects"] = objects;
-
-	// Append effect's properties
-	root["id"] = add_property_json("ID", 0.0, "string", Id(), NULL, -1, -1, true, requested_frame);
-	root["position"] = add_property_json("Position", Position(), "float", "", NULL, 0, 1000 * 60 * 30, false, requested_frame);
-	root["layer"] = add_property_json("Track", Layer(), "int", "", NULL, 0, 20, false, requested_frame);
-	root["start"] = add_property_json("Start", Start(), "float", "", NULL, 0, 1000 * 60 * 30, false, requested_frame);
-	root["end"] = add_property_json("End", End(), "float", "", NULL, 0, 1000 * 60 * 30, false, requested_frame);
-	root["duration"] = add_property_json("Duration", Duration(), "float", "", NULL, 0, 1000 * 60 * 30, true, requested_frame);
 
 	// Return formatted string
 	return root.toStyledString();

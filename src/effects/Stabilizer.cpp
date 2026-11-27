@@ -7,27 +7,9 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include <fstream>
 #include <iomanip>
@@ -35,7 +17,25 @@
 
 #include "effects/Stabilizer.h"
 #include "Exceptions.h"
+#include "stabilizedata.pb.h"
+
 #include <google/protobuf/util/time_util.h>
+
+#if CV_VERSION_MAJOR >= 5
+#define int64 opencv_broken_int
+#define uint64 opencv_broken_uint
+#include <opencv2/geometry/2d.hpp>
+#undef uint64
+#undef int64
+#else
+#include <opencv2/imgproc.hpp>
+#endif
+
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+#include "VulkanCompositor.h"
+#include "VulkanFrameImage.h"
+#include "Logger.h"
+#endif
 
 using namespace std;
 using namespace openshot;
@@ -44,10 +44,10 @@ using google::protobuf::util::TimeUtil;
 /// Blank constructor, useful when using Json to load the effect properties
 Stabilizer::Stabilizer(std::string clipStabilizedDataPath):protobuf_data_path(clipStabilizedDataPath)
 {
-    // Init effect properties
+	// Init effect properties
 	init_effect_details();
-    // Tries to load the stabilization data from protobuf
-    LoadStabilizedData(clipStabilizedDataPath);
+	// Tries to load the stabilization data from protobuf
+	LoadStabilizedData(clipStabilizedDataPath);
 }
 
 // Default constructor
@@ -78,6 +78,36 @@ void Stabilizer::init_effect_details()
 // modified openshot::Frame object
 std::shared_ptr<Frame> Stabilizer::GetFrame(std::shared_ptr<Frame> frame, int64_t frame_number)
 {
+
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+    if(VulkanRenderingEnabled()) {
+        try {
+            auto surface=frame->GetDeferredImage();
+            if(!surface && ParentClip() && frame->has_image_data) surface=UploadVulkanImage(*frame->GetImage());
+            if(surface) {
+                const auto transform=transformationData.find(frame_number);
+                if(transform==transformationData.end()) {
+                    frame->AddDeferredImage(StabilizeVulkanImage(surface,{}));return frame;
+                }
+                const auto& t=transform->second;
+                const int w=surface->GetWidth(),h=surface->GetHeight();
+                const cv::Mat rotation=(cv::Mat_<double>(2,3)<<cos(t.da),-sin(t.da),t.dx*w,sin(t.da),cos(t.da),t.dy*h);
+                const float scale=zoom.GetValue(frame_number);
+                const auto zoom_matrix=cv::getRotationMatrix2D(cv::Point2f(w/2,h/2),0,scale);
+                // OpenCV quantizes each axis independently before the 1/32-pixel interpolation.
+                std::vector<std::vector<int32_t>> axes;
+                for(const auto& forward:{rotation,zoom_matrix}) {
+                    cv::Mat inverse;cv::invertAffineTransform(forward,inverse);
+                    const double* m=inverse.ptr<double>();std::vector<int32_t> table(2*(w+h));
+                    for(int x=0;x<w;++x) { table[2*x]=cv::saturate_cast<int>(m[0]*x*1024);table[2*x+1]=cv::saturate_cast<int>(m[3]*x*1024); }
+                    for(int y=0;y<h;++y) { table[2*(w+y)]=cv::saturate_cast<int>((m[1]*y+m[2])*1024)+16;table[2*(w+y)+1]=cv::saturate_cast<int>((m[4]*y+m[5])*1024)+16; }
+                    axes.push_back(std::move(table));
+                }
+                frame->AddDeferredImage(StabilizeVulkanImage(surface,axes));return frame;
+            }
+        } catch(const std::exception& e) { Logger::Instance()->Log(std::string("Vulkan Stabilizer CPU fallback: ")+e.what()); }
+    }
+#endif
 
 	// Grab OpenCV Mat image
 	cv::Mat frame_image = frame->GetImageCV();
@@ -120,51 +150,51 @@ std::shared_ptr<Frame> Stabilizer::GetFrame(std::shared_ptr<Frame> frame, int64_
 
 // Load protobuf data file
 bool Stabilizer::LoadStabilizedData(std::string inputFilePath){
-    using std::ios;
-    // Create stabilization message
-    pb_stabilize::Stabilization stabilizationMessage;
+	using std::ios;
+	// Create stabilization message
+	pb_stabilize::Stabilization stabilizationMessage;
 
-    // Read the existing tracker message.
-    std::fstream input(inputFilePath, ios::in | ios::binary);
-    if (!stabilizationMessage.ParseFromIstream(&input)) {
-        std::cerr << "Failed to parse protobuf message." << std::endl;
-        return false;
-    }
+	// Read the existing tracker message.
+	std::fstream input(inputFilePath, ios::in | ios::binary);
+	if (!stabilizationMessage.ParseFromIstream(&input)) {
+		std::cerr << "Failed to parse protobuf message." << std::endl;
+		return false;
+	}
 
-    // Make sure the data maps are empty
-    transformationData.clear();
-    trajectoryData.clear();
+	// Make sure the data maps are empty
+	transformationData.clear();
+	trajectoryData.clear();
 
-    // Iterate over all frames of the saved message and assign to the data maps
-    for (size_t i = 0; i < stabilizationMessage.frame_size(); i++) {
+	// Iterate over all frames of the saved message and assign to the data maps
+	for (size_t i = 0; i < stabilizationMessage.frame_size(); i++) {
 
 		// Create stabilization message
-        const pb_stabilize::Frame& pbFrameData = stabilizationMessage.frame(i);
+		const pb_stabilize::Frame& pbFrameData = stabilizationMessage.frame(i);
 
-        // Load frame number
-        size_t id = pbFrameData.id();
+		// Load frame number
+		size_t id = pbFrameData.id();
 
-        // Load camera trajectory data
-        float x = pbFrameData.x();
-        float y = pbFrameData.y();
-        float a = pbFrameData.a();
+		// Load camera trajectory data
+		float x = pbFrameData.x();
+		float y = pbFrameData.y();
+		float a = pbFrameData.a();
 
-        // Assign data to trajectory map
-        trajectoryData[i] = EffectCamTrajectory(x,y,a);
+		// Assign data to trajectory map
+		trajectoryData[i] = EffectCamTrajectory(x,y,a);
 
-        // Load transformation data
-        float dx = pbFrameData.dx();
-        float dy = pbFrameData.dy();
-        float da = pbFrameData.da();
+		// Load transformation data
+		float dx = pbFrameData.dx();
+		float dy = pbFrameData.dy();
+		float da = pbFrameData.da();
 
-        // Assing data to transformation map
-        transformationData[id] = EffectTransformParam(dx,dy,da);
-    }
+		// Assing data to transformation map
+		transformationData[id] = EffectTransformParam(dx,dy,da);
+	}
 
-    // Delete all global objects allocated by libprotobuf.
-    google::protobuf::ShutdownProtobufLibrary();
+	// Delete all global objects allocated by libprotobuf.
+	google::protobuf::ShutdownProtobufLibrary();
 
-    return true;
+	return true;
 }
 
 
@@ -229,18 +259,9 @@ void Stabilizer::SetJsonValue(const Json::Value root) {
 std::string Stabilizer::PropertiesJSON(int64_t requested_frame) const {
 
 	// Generate JSON properties list
-	Json::Value root;
-	root["id"] = add_property_json("ID", 0.0, "string", Id(), NULL, -1, -1, true, requested_frame);
-	root["position"] = add_property_json("Position", Position(), "float", "", NULL, 0, 1000 * 60 * 30, false, requested_frame);
-	root["layer"] = add_property_json("Track", Layer(), "int", "", NULL, 0, 20, false, requested_frame);
-	root["start"] = add_property_json("Start", Start(), "float", "", NULL, 0, 1000 * 60 * 30, false, requested_frame);
-	root["end"] = add_property_json("End", End(), "float", "", NULL, 0, 1000 * 60 * 30, false, requested_frame);
-	root["duration"] = add_property_json("Duration", Duration(), "float", "", NULL, 0, 1000 * 60 * 30, true, requested_frame);
+	Json::Value root = BasePropertiesJSON(requested_frame);
 
 	root["zoom"] = add_property_json("Zoom", zoom.GetValue(requested_frame), "float", "", &zoom, 0.0, 2.0, false, requested_frame);
-
-	// Set the parent effect which properties this effect will inherit
-	root["parent_effect_id"] = add_property_json("Parent", 0.0, "string", info.parent_effect_id, NULL, -1, -1, false, requested_frame);
 
 	// Return formatted string
 	return root.toStyledString();

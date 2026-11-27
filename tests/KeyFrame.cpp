@@ -6,44 +6,32 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
-#include <catch2/catch.hpp>
+#include "openshot_catch.h"
 
 #include <sstream>
 #include <memory>
 
+#include <QColor>
+#include <QImage>
+
 #include "KeyFrame.h"
-#include "Exceptions.h"
 #include "Coordinate.h"
-#include "Fraction.h"
 #include "Clip.h"
+#include "Exceptions.h"
+#include "FFmpegReader.h"
+#include "Fraction.h"
+#include "Frame.h"
+#include "Point.h"
 #include "Timeline.h"
+
 #ifdef USE_OPENCV
 #include "effects/Tracker.h"
 #include "TrackedObjectBBox.h"
 #endif
-#include "Point.h"
 
 using namespace openshot;
 
@@ -109,7 +97,7 @@ TEST_CASE( "GetValue (Bezier curve, 2 Points)", "[libopenshot][keyframe]" )
 	CHECK(kf.GetValue(40) == Approx(3.79733f).margin(0.0001));
 	CHECK(kf.GetValue(50) == Approx(4.0f).margin(0.0001));
 	// Check the expected number of values
-	CHECK(kf.GetLength() == 51);
+	CHECK(kf.GetLength() == 50);
 }
 
 TEST_CASE( "GetValue (Bezier, 5 Points, 40% handle)", "[libopenshot][keyframe]" )
@@ -132,7 +120,7 @@ TEST_CASE( "GetValue (Bezier, 5 Points, 40% handle)", "[libopenshot][keyframe]" 
 	CHECK(kf.GetValue(177) == Approx(1.73860f).margin(0.0001));
 	CHECK(kf.GetValue(200) == Approx(3.0f).margin(0.0001));
 	// Check the expected number of values
-	CHECK(kf.GetLength() == 201);
+	CHECK(kf.GetLength() == 200);
 }
 
 TEST_CASE( "GetValue (Bezier, 5 Points, 25% Handle)", "[libopenshot][keyframe]" )
@@ -155,7 +143,7 @@ TEST_CASE( "GetValue (Bezier, 5 Points, 25% Handle)", "[libopenshot][keyframe]" 
 	CHECK(kf.GetValue(177) == Approx(1.73860f).margin(0.0001));
 	CHECK(kf.GetValue(200) == Approx(3.0f).margin(0.0001));
 	// Check the expected number of values
-	CHECK(kf.GetLength() == 201);
+	CHECK(kf.GetLength() == 200);
 }
 
 TEST_CASE( "GetValue (Linear, 3 Points)", "[libopenshot][keyframe]" )
@@ -175,7 +163,7 @@ TEST_CASE( "GetValue (Linear, 3 Points)", "[libopenshot][keyframe]" )
 	CHECK(kf.GetValue(40) == Approx(4.4f).margin(0.0001));
 	CHECK(kf.GetValue(50) == Approx(2.0f).margin(0.0001));
 	// Check the expected number of values
-	CHECK(kf.GetLength() == 51);
+	CHECK(kf.GetLength() == 50);
 }
 
 TEST_CASE( "GetValue (Constant, 3 Points)", "[libopenshot][keyframe]" )
@@ -196,10 +184,10 @@ TEST_CASE( "GetValue (Constant, 3 Points)", "[libopenshot][keyframe]" )
 	CHECK(kf.GetValue(49) == Approx(8.0f).margin(0.0001));
 	CHECK(kf.GetValue(50) == Approx(2.0f).margin(0.0001));
 	// Check the expected number of values
-	CHECK(kf.GetLength() == 51);
+	CHECK(kf.GetLength() == 50);
 }
 
-TEST_CASE( "GetDelta and GetRepeatFraction", "[libopenshot][keyframe]" )
+TEST_CASE( "GetDelta", "[libopenshot][keyframe]" )
 {
 	// Create a keyframe curve with 2 points
 	Keyframe kf;
@@ -210,27 +198,19 @@ TEST_CASE( "GetDelta and GetRepeatFraction", "[libopenshot][keyframe]" )
 	// Spot check values from the curve
 	CHECK(kf.GetInt(1) == 500);
 	CHECK_FALSE(kf.IsIncreasing(1));
-	CHECK(kf.GetRepeatFraction(1).num == 1);
-	CHECK(kf.GetRepeatFraction(1).den == 13);
 	CHECK(kf.GetDelta(1) == 500);
 
 	CHECK(kf.GetInt(24) == 498);
 	CHECK_FALSE(kf.IsIncreasing(24));
-	CHECK(kf.GetRepeatFraction(24).num == 3);
-	CHECK(kf.GetRepeatFraction(24).den == 6);
-	CHECK(kf.GetDelta(24) == 0);
+	CHECK(kf.GetDelta(24) == Approx(-0.1622f).margin(0.0001));
 
 	CHECK(kf.GetLong(390) == 100);
-	CHECK(kf.IsIncreasing(390) == true);
-	CHECK(kf.GetRepeatFraction(390).num == 3);
-	CHECK(kf.GetRepeatFraction(390).den == 16);
-	CHECK(kf.GetDelta(390) == 0);
+	CHECK(kf.IsIncreasing(390) == false);
+	CHECK(kf.GetDelta(390) == Approx(-0.0732f).margin(0.0001));
 
 	CHECK(kf.GetLong(391) == 100);
-	CHECK(kf.IsIncreasing(391) == true);
-	CHECK(kf.GetRepeatFraction(391).num == 4);
-	CHECK(kf.GetRepeatFraction(391).den == 16);
-	CHECK(kf.GetDelta(388) == -1);
+	CHECK(kf.IsIncreasing(391) == false);
+	CHECK(kf.GetDelta(388) == Approx(-0.0886f).margin(0.0001));
 }
 
 
@@ -406,7 +386,7 @@ TEST_CASE( "large number values", "[libopenshot][keyframe]" )
 	kf.AddPoint(large_value, 100.0); // 90 minutes long
 
 	// Spot check values from the curve
-	CHECK(kf.GetLength() == large_value + 1);
+	CHECK(kf.GetLength() == large_value);
 	CHECK(kf.GetPoint(0).co.Y == Approx(1.0).margin(0.01));
 	CHECK(kf.GetPoint(1).co.Y == Approx(100.0).margin(0.01));
 }
@@ -458,7 +438,7 @@ TEST_CASE( "IsIncreasing", "[libopenshot][keyframe]" )
 	CHECK(kf.IsIncreasing(0) == true);
 	CHECK(kf.IsIncreasing(15) == true);
 	// all next equal
-	CHECK_FALSE(kf.IsIncreasing(12));
+	CHECK(kf.IsIncreasing(12) == true);
 	// first non-eq is larger
 	CHECK(kf.IsIncreasing(8) == true);
 	// first non-eq is smaller
@@ -475,15 +455,15 @@ TEST_CASE( "GetLength", "[libopenshot][keyframe]" )
 	f.AddPoint(1, 1);
 	CHECK(f.GetLength() == 1);
 	f.AddPoint(2, 1);
-	CHECK(f.GetLength() == 3);
+	CHECK(f.GetLength() == 2);
 	f.AddPoint(200, 1);
-	CHECK(f.GetLength() == 201);
+	CHECK(f.GetLength() == 200);
 
 	Keyframe g;
 	g.AddPoint(200, 1);
 	CHECK(g.GetLength() == 1);
 	g.AddPoint(1,1);
-	CHECK(g.GetLength() == 201);
+	CHECK(g.GetLength() == 200);
 }
 
 TEST_CASE( "use segment end point interpolation", "[libopenshot][keyframe]" )
@@ -502,9 +482,6 @@ TEST_CASE( "handle large segment", "[libopenshot][keyframe]" )
 
 	CHECK(kf.GetValue(500000) == Approx(0.5).margin(0.01));
 	CHECK(kf.IsIncreasing(10) == true);
-
-	Fraction fr = kf.GetRepeatFraction(250000);
-	CHECK((double)fr.num / fr.den == Approx(0.5).margin(0.01));
 }
 
 TEST_CASE( "std::vector<Point> constructor", "[libopenshot][keyframe]" )
@@ -512,8 +489,88 @@ TEST_CASE( "std::vector<Point> constructor", "[libopenshot][keyframe]" )
 	std::vector<Point> points{Point(1, 10), Point(5, 20), Point(10, 30)};
 	Keyframe k1(points);
 
-	CHECK(k1.GetLength() == 11);
+	CHECK(k1.GetLength() == 10);
 	CHECK(k1.GetValue(10) == Approx(30.0f).margin(0.0001));
+}
+
+TEST_CASE( "PrintPoints", "[libopenshot][keyframe]" )
+{
+	std::vector<Point> points{
+		Point(1, 10),
+		Point(225, 397),
+		Point(430, -153.4),
+		Point(999, 12345.678)
+	};
+	Keyframe k1(points);
+
+	std::stringstream output;
+	k1.PrintPoints(&output);
+
+    const std::string expected =
+R"(     1       10.0000
+   225      397.0000
+   430     -153.4000
+   999    12345.6777)";
+
+	// Ensure the two strings are equal up to the limits of 'expected'
+	CHECK(output.str().substr(0, expected.size()) == expected);
+}
+
+TEST_CASE( "PrintValues", "[libopenshot][keyframe]" )
+{
+	std::vector<Point> points{
+		Point(1, 10),
+		Point(225, 397),
+		Point(430, -153.4),
+		Point(999, 12345.678)
+	};
+	Keyframe k1(points);
+
+	std::stringstream output;
+	k1.PrintValues(&output);
+
+    const std::string expected =
+R"(│Frame# (X) │     Y Value │ Delta Y │ Increasing?│
+├───────────┼─────────────┼─────────┼────────────┤
+│       1 * │     10.0000 │     +10 │        true│
+│       2   │     10.0104 │+0.01036 │        true│
+│       3   │     10.0414 │+0.03101 │        true│
+│       4   │     10.0942 │+0.05279 │        true│
+│       5   │     10.1665 │+0.07234 │        true│
+│       6   │     10.2633 │+0.09682 │        true│
+│       7   │     10.3794 │ +0.1161 │        true│
+│       8   │     10.5193 │ +0.1399 │        true│
+│       9   │     10.6807 │ +0.1614 │        true│
+│      10   │     10.8636 │ +0.1828 │        true│
+│      11   │     11.0719 │ +0.2083 │        true│
+│      12   │     11.3021 │ +0.2303 │        true│
+│      13   │     11.5542 │ +0.2521 │        true│
+│      14   │     11.8334 │ +0.2792 │        true│
+│      15   │     12.1349 │ +0.3015 │        true│
+│      16   │     12.4587 │ +0.3237 │        true│
+│      17   │     12.8111 │ +0.3525 │        true│
+│      18   │     13.1863 │ +0.3752 │        true│
+│      19   │     13.5840 │ +0.3977 │        true│
+│      20   │     14.0121 │ +0.4281 │        true│
+│      21   │     14.4632 │ +0.4511 │        true│
+│      22   │     14.9460 │ +0.4828 │        true│
+│      23   │     15.4522 │ +0.5063 │        true│
+│      24   │     15.9818 │ +0.5296 │        true│
+│      25   │     16.5446 │ +0.5628 │        true│
+│      26   │     17.1312 │ +0.5866 │        true│
+│      27   │     17.7414 │ +0.6102 │        true│
+│      28   │     18.3862 │ +0.6449 │        true│
+│      29   │     19.0551 │ +0.6689 │        true│
+│      30   │     19.7599 │ +0.7048 │        true│
+│      31   │     20.4891 │ +0.7292 │        true│
+│      32   │     21.2425 │ +0.7534 │        true│
+│      33   │     22.0333 │ +0.7908 │        true│
+│      34   │     22.8486 │ +0.8153 │        true│
+│      35   │     23.7024 │ +0.8539 │        true│
+│      36   │     24.5812 │ +0.8788 │        true│)";
+
+	// Ensure the two strings are equal up to the limits of 'expected'
+	CHECK(output.str().substr(0, expected.size()) == expected);
 }
 
 #ifdef USE_OPENCV
@@ -521,30 +578,29 @@ TEST_CASE( "TrackedObjectBBox init", "[libopenshot][keyframe]" )
 {
 	TrackedObjectBBox kfb(62,143,0,212);
 
-    CHECK(kfb.delta_x.GetInt(1) == 0);
-    CHECK(kfb.delta_y.GetInt(1) == 0);
+	CHECK(kfb.delta_x.GetInt(1) == 0);
+	CHECK(kfb.delta_y.GetInt(1) == 0);
 
-    CHECK(kfb.scale_x.GetInt(1) == 1);
-    CHECK(kfb.scale_y.GetInt(1) == 1);
+	CHECK(kfb.scale_x.GetInt(1) == 1);
+	CHECK(kfb.scale_y.GetInt(1) == 1);
 
-    CHECK(kfb.rotation.GetInt(1) == 0);
+	CHECK(kfb.stroke_width.GetInt(1) == 2);
+    CHECK(kfb.stroke_alpha.GetValue(1) == Approx(0.7f).margin(0.0001));
+	CHECK(kfb.draw_box.GetInt(1) == 1);
+	CHECK(kfb.draw_text.GetInt(1) == 1);
 
-    CHECK(kfb.stroke_width.GetInt(1) == 2);
-    CHECK(kfb.stroke_alpha.GetInt(1) == 0);
+	CHECK(kfb.background_alpha .GetInt(1) == 0);
+	CHECK(kfb.background_corner.GetInt(1) == 12);
 
-    CHECK(kfb.background_alpha .GetInt(1)== 1);
-    CHECK(kfb.background_corner.GetInt(1) == 0);
+	CHECK(kfb.stroke.red.GetInt(1) == 62);
+	CHECK(kfb.stroke.green.GetInt(1) == 143);
+	CHECK(kfb.stroke.blue.GetInt(1) == 0);
+	CHECK(kfb.stroke.alpha.GetInt(1) == 212);
 
-    CHECK(kfb.stroke.red.GetInt(1) == 62);
-    CHECK(kfb.stroke.green.GetInt(1) == 143);
-    CHECK(kfb.stroke.blue.GetInt(1) == 0);
-    CHECK(kfb.stroke.alpha.GetInt(1) == 212);
-
-    CHECK(kfb.background.red.GetInt(1) == 0);
-    CHECK(kfb.background.green.GetInt(1) == 0);
-    CHECK(kfb.background.blue.GetInt(1) == 255);
-    CHECK(kfb.background.alpha.GetInt(1) == 0);
-
+	CHECK(kfb.background.red.GetInt(1) == 62);
+	CHECK(kfb.background.green.GetInt(1) == 143);
+	CHECK(kfb.background.blue.GetInt(1) == 0);
+	CHECK(kfb.background.alpha.GetInt(1) == 212);
 }
 
 TEST_CASE( "TrackedObjectBBox AddBox and RemoveBox", "[libopenshot][keyframe]" )
@@ -735,4 +791,115 @@ TEST_CASE( "GetBoxValues", "[libopenshot][keyframe]" )
 	CHECK(boxValues["h"] == 20.0);
 	CHECK(boxValues["ang"] == 30.0);
 }
+
+TEST_CASE( "Tracker stroke width compensates for preview raster scaling", "[libopenshot][keyframe][tracker]" )
+{
+	auto blue_run_at_center = []() {
+		Timeline timeline(100, 100, Fraction(30, 1), 44100, 2, ChannelLayout::LAYOUT_STEREO);
+		Clip parent;
+		parent.ParentTimeline(&timeline);
+
+		Tracker tracker;
+		tracker.ParentClip(&parent);
+		tracker.trackedData->ParentClip(&parent);
+		tracker.trackedData->AddBox(1, 0.5f, 0.5f, 0.4f, 0.4f, 0.0f);
+		tracker.trackedData->stroke_alpha = Keyframe(1.0);
+		tracker.trackedData->background_alpha = Keyframe(0.0);
+
+		auto image = std::make_shared<QImage>(200, 200, QImage::Format_RGBA8888_Premultiplied);
+		image->fill(QColor(0, 0, 0, 0));
+		auto frame = std::make_shared<Frame>(1, 200, 200, "#000000", 0, 0);
+		frame->AddImage(image);
+
+		tracker.GetFrame(frame, 1);
+		auto rendered = frame->GetImage();
+
+		int best_run = 0;
+		int current_run = 0;
+		for (int x = 40; x <= 160; ++x) {
+			const QColor pixel = rendered->pixelColor(x, 100);
+			const bool blue_pixel = pixel.alpha() > 0 && pixel.blue() > 120 && pixel.red() < 80 && pixel.green() < 80;
+			if (blue_pixel) {
+				current_run++;
+				best_run = std::max(best_run, current_run);
+			} else {
+				current_run = 0;
+			}
+		}
+		return best_run;
+	};
+
+	CHECK(blue_run_at_center() >= 3);
+}
 #endif
+
+TEST_CASE("JSON keyframe loading preserves AddPoint semantics", "[libopenshot][keyframe][json]")
+{
+    std::vector<double> frames;
+    SECTION("sorted") { frames = {1, 4, 8, 20}; }
+    SECTION("unordered and duplicate frames") { frames = {20, 4, 8, 4, 1, 20}; }
+    SECTION("fractional frames") { frames = {1, 1.25, 1.75, 1.25, 2}; }
+    SECTION("large sorted curve") {
+        for (int i = 1; i <= 5000; ++i) frames.push_back(i);
+    }
+    Json::Value data;
+    data["Points"] = Json::Value(Json::arrayValue);
+    Keyframe expected;
+    for (size_t i = 0; i < frames.size(); ++i) {
+        Point point(frames[i], i * 0.125, static_cast<InterpolationType>(i % 3));
+        // Only Bezier points serialize custom handles.
+        if (point.interpolation == BEZIER) {
+            point.handle_left = Coordinate(0.2, 0.8);
+            point.handle_right = Coordinate(0.7, 0.1);
+        }
+        data["Points"].append(point.JsonValue());
+        expected.AddPoint(point);
+    }
+    const Json::Value original = data;
+    Keyframe actual(99);
+    actual.SetJsonValue(data);
+    CHECK(data == original);
+    CHECK(actual.JsonValue() == expected.JsonValue());
+    for (int frame = 1; frame <= 20; ++frame)
+        CHECK(actual.GetValue(frame) == Approx(expected.GetValue(frame)));
+
+    // Replacing a large animation must discard old points, even when capacity
+    // is retained internally for the next drag sample.
+    actual.SetJsonValue(Json::Value(0.75));
+    CHECK(actual.GetCount() == 1);
+    CHECK(actual.GetValue(1) == Approx(0.75));
+    Json::Value empty;
+    empty["Points"] = Json::Value(Json::arrayValue);
+    actual.SetJsonValue(empty);
+    CHECK(actual.GetCount() == 0);
+    actual.SetJsonValue(data);
+    CHECK(actual.JsonValue() == expected.JsonValue());
+}
+
+TEST_CASE("Single point patches preserve animation and Bezier handles", "[libopenshot][keyframe][live-edit]") {
+    openshot::Keyframe curve;
+    curve.AddPoint(1, 0, openshot::LINEAR);
+    curve.AddPoint(100, 1, openshot::BEZIER);
+    auto before = curve.JsonValue();
+    before["Points"][1]["handle_left"]["X"] = 0.2;
+    curve.SetJsonValue(before);
+    Json::Value patch;
+    patch["Point"]["co"]["X"] = 100;
+    patch["Point"]["co"]["Y"] = 2.0;
+    curve.SetJsonValue(patch);
+    CHECK(curve.GetCount() == 2);
+    CHECK(curve.GetValue(100) == 2.0);
+    CHECK(curve.JsonValue()["Points"][1]["interpolation"] == before["Points"][1]["interpolation"]);
+    CHECK(curve.JsonValue()["Points"][1]["handle_left"] == before["Points"][1]["handle_left"]);
+    patch["Point"]["co"]["X"] = 50;
+    curve.SetJsonValue(patch);
+    CHECK(curve.GetCount() == 3);
+    CHECK(curve.JsonValue()["Points"][1]["co"]["X"].asDouble() == 50);
+    auto saved = curve.JsonValue();
+    patch["Point"].removeMember("co");
+    CHECK_THROWS(curve.SetJsonValue(patch));
+    CHECK(curve.JsonValue() == saved);
+    curve.SetJsonValue(before);
+    CHECK(curve.GetCount() == 2);
+    CHECK(curve.GetValue(100) == 1.0);
+}

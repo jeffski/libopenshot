@@ -7,29 +7,17 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "VideoPlaybackThread.h"
+#include "Logger.h"
+
+#include "Frame.h"
+#include "RendererBase.h"
+#include "Logger.h"
+#include <utility>
 
 namespace openshot
 {
@@ -48,10 +36,14 @@ namespace openshot
     // Get the currently playing frame number (if any)
     int64_t VideoPlaybackThread::getCurrentFramePosition()
     {
-    	if (frame)
-    		return frame->number;
-    	else
-    		return 0;
+	std::lock_guard<std::mutex> lock(frame_mutex);
+	return frame ? frame->number : 0;
+    }
+
+    void VideoPlaybackThread::SetFrame(std::shared_ptr<Frame> next_frame)
+    {
+	std::lock_guard<std::mutex> lock(frame_mutex);
+	frame = std::move(next_frame);
     }
 
     // Start the thread
@@ -60,14 +52,24 @@ namespace openshot
 	while (!threadShouldExit()) {
 	    // Make other threads wait on the render event
 		bool need_render = render.wait(500);
+        if (threadShouldExit())
+            break;
+		std::shared_ptr<Frame> frame_to_render;
+		if (need_render) {
+			std::lock_guard<std::mutex> lock(frame_mutex);
+			frame_to_render = frame;
+		}
 
-		if (need_render && frame)
+		if (frame_to_render)
 		{
 			// Debug
-			ZmqLogger::Instance()->AppendDebugMethod("VideoPlaybackThread::run (before render)", "frame->number", frame->number, "need_render", need_render);
+			Logger::Instance()->AppendDebugMethod(
+				"VideoPlaybackThread::run (before render)",
+				"frame->number", frame_to_render->number,
+				"need_render", need_render);
 
 			// Render the frame to the screen
-			renderer->paint(frame);
+			renderer->paint(frame_to_render);
 		}
 
 		// Signal to other threads that the rendered event has completed

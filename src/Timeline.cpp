@@ -6,46 +6,39 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
+#include "GpuMetrics.h"
 #include "Timeline.h"
+#include "PreviewSize.h"
 
 #include "CacheBase.h"
 #include "CacheDisk.h"
 #include "CacheMemory.h"
 #include "CrashHandler.h"
 #include "FrameMapper.h"
+#include "QtTextReader.h"
+#include "QtImageReader.h"
+#include "FFmpegReader.h"
 #include "Exceptions.h"
+#include "effects/Mask.h"
 
+#include <algorithm>
+#include <utility>
 #include <QDir>
 #include <QFileInfo>
+#include <QRegularExpression>
+#include <unordered_map>
+#include <cmath>
+#include <cstdint>
 
 using namespace openshot;
 
 // Default Constructor for the timeline (which sets the canvas width and height)
 Timeline::Timeline(int width, int height, Fraction fps, int sample_rate, int channels, ChannelLayout channel_layout) :
-		is_open(false), auto_map_clips(true), managed_cache(true), path(""),
-		max_concurrent_frames(OPEN_MP_NUM_PROCESSORS)
+		is_open(false), auto_map_clips(true), managed_cache(true), path(""), max_time(0.0), cache_epoch(0)
 {
 	// Create CrashHandler and Attach (incase of errors)
 	CrashHandler::Instance();
@@ -80,22 +73,26 @@ Timeline::Timeline(int width, int height, Fraction fps, int sample_rate, int cha
 	info.acodec = "openshot::timeline";
 	info.vcodec = "openshot::timeline";
 
-    // Init cache
-    final_cache = new CacheMemory();
-
 	// Init max image size
 	SetMaxSize(info.width, info.height);
+
+	// Init cache
+	final_cache = new CacheMemory();
+	const int cache_frames = std::max(Settings::Instance()->CACHE_MIN_FRAMES, OPEN_MP_NUM_PROCESSORS * 4);
+	final_cache->SetMaxBytesFromInfo(cache_frames, info.width, info.height, info.sample_rate, info.channels);
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+	final_cache->SetMaxBytes(std::min<int64_t>(final_cache->GetMaxBytes(), 256LL * 1024 * 1024));
+#endif
 }
 
 // Delegating constructor that copies parameters from a provided ReaderInfo
-Timeline::Timeline(const ReaderInfo info) :
-	Timeline::Timeline(info.width, info.height, info.fps, info.sample_rate,
-	                   info.channels, info.channel_layout) {};
+Timeline::Timeline(const ReaderInfo info) : Timeline::Timeline(
+	info.width, info.height, info.fps, info.sample_rate,
+	info.channels, info.channel_layout) {}
 
 // Constructor for the timeline (which loads a JSON structure from a file path, and initializes a timeline)
 Timeline::Timeline(const std::string& projectPath, bool convert_absolute_paths) :
-		is_open(false), auto_map_clips(true), managed_cache(true), path(projectPath),
-        max_concurrent_frames(OPEN_MP_NUM_PROCESSORS) {
+		is_open(false), auto_map_clips(true), managed_cache(true), path(projectPath), max_time(0.0), cache_epoch(0) {
 
 	// Create CrashHandler and Attach (incase of errors)
 	CrashHandler::Instance();
@@ -116,7 +113,7 @@ Timeline::Timeline(const std::string& projectPath, bool convert_absolute_paths) 
 	// Check if path exists
 	QFileInfo filePath(QString::fromStdString(path));
 	if (!filePath.exists()) {
-		throw InvalidFile("File could not be opened.", path);
+		throw InvalidFile("Timeline project file could not be opened.", path);
 	}
 
 	// Check OpenShot Install Path exists
@@ -212,29 +209,26 @@ Timeline::Timeline(const std::string& projectPath, bool convert_absolute_paths) 
 	info.has_video = true;
 	info.has_audio = true;
 
-    // Init cache
-    final_cache = new CacheMemory();
-
 	// Init max image size
 	SetMaxSize(info.width, info.height);
+
+	// Init cache
+	final_cache = new CacheMemory();
+	const int cache_frames = std::max(Settings::Instance()->CACHE_MIN_FRAMES, OPEN_MP_NUM_PROCESSORS * 4);
+	final_cache->SetMaxBytesFromInfo(cache_frames, info.width, info.height, info.sample_rate, info.channels);
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+	final_cache->SetMaxBytes(std::min<int64_t>(final_cache->GetMaxBytes(), 256LL * 1024 * 1024));
+#endif
 }
 
 Timeline::~Timeline() {
-	if (is_open)
+	if (is_open) {
 		// Auto Close if not already
 		Close();
-
-	// Free all allocated frame mappers
-	std::set<FrameMapper *>::iterator it;
-	for (it = allocated_frame_mappers.begin(); it != allocated_frame_mappers.end(); ) {
-		// Dereference and clean up FrameMapper object
-		FrameMapper *mapper = (*it);
-		mapper->Reader(NULL);
-		mapper->Close();
-		delete mapper;
-		// Remove reference and proceed to next element
-		it = allocated_frame_mappers.erase(it);
 	}
+
+	// Remove all clips, effects, and frame mappers
+	Clear();
 
 	// Destroy previous cache (if managed by timeline)
 	if (managed_cache && final_cache) {
@@ -243,8 +237,29 @@ Timeline::~Timeline() {
 	}
 }
 
-// Add to the tracked_objects map a pointer to a tracked object (TrackedObjectBBox) 
+// Resolve tracked objects from the current effect graph, including objects reloaded
+// after an effect was added. The registry must never keep removed objects alive.
+void Timeline::RefreshTrackedObjects() const {
+	for (const auto& entry : tracked_objects)
+		entry.second->ParentClip(nullptr);
+	tracked_objects.clear();
+	for (auto clip : clips) {
+		for (auto effect : clip->Effects()) {
+			for (const auto& entry : effect->trackedObjects) {
+				if (entry.second) {
+					entry.second->ParentClip(clip);
+					tracked_objects[entry.second->Id()] = entry.second;
+				}
+			}
+		}
+	}
+}
+
+// Add to the tracked_objects map a pointer to a tracked object (TrackedObjectBBox)
 void Timeline::AddTrackedObject(std::shared_ptr<openshot::TrackedObjectBase> trackedObject){
+	const std::lock_guard<std::recursive_mutex> guard(getFrameMutex);
+	if (!trackedObject)
+		return;
 
 	// Search for the tracked object on the map
 	auto iterator = tracked_objects.find(trackedObject->Id());
@@ -252,7 +267,7 @@ void Timeline::AddTrackedObject(std::shared_ptr<openshot::TrackedObjectBase> tra
 	if (iterator != tracked_objects.end()){
 		// Tracked object's id already present on the map, overwrite it
 		iterator->second = trackedObject;
-	} 
+	}
 	else{
 		// Tracked object's id not present -> insert it on the map
 		tracked_objects[trackedObject->Id()] = trackedObject;
@@ -263,6 +278,8 @@ void Timeline::AddTrackedObject(std::shared_ptr<openshot::TrackedObjectBase> tra
 
 // Return tracked object pointer by it's id
 std::shared_ptr<openshot::TrackedObjectBase> Timeline::GetTrackedObject(std::string id) const{
+	const std::lock_guard<std::recursive_mutex> guard(const_cast<Timeline*>(this)->getFrameMutex);
+	RefreshTrackedObjects();
 
 	// Search for the tracked object on the map
 	auto iterator = tracked_objects.find(id);
@@ -275,11 +292,13 @@ std::shared_ptr<openshot::TrackedObjectBase> Timeline::GetTrackedObject(std::str
 	else {
 		// Id not found, return a null pointer
 		return nullptr;
-	}	
+	}
 }
 
 // Return the ID's of the tracked objects as a list of strings
 std::list<std::string> Timeline::GetTrackedObjectsIds() const{
+	const std::lock_guard<std::recursive_mutex> guard(const_cast<Timeline*>(this)->getFrameMutex);
+	RefreshTrackedObjects();
 
 	// Create a list of strings
 	std::list<std::string> trackedObjects_ids;
@@ -296,6 +315,8 @@ std::list<std::string> Timeline::GetTrackedObjectsIds() const{
 #ifdef USE_OPENCV
 // Return the trackedObject's properties as a JSON string
 std::string Timeline::GetTrackedObjectValues(std::string id, int64_t frame_number) const {
+	const std::lock_guard<std::recursive_mutex> guard(const_cast<Timeline*>(this)->getFrameMutex);
+	RefreshTrackedObjects();
 
 	// Initialize the JSON object
 	Json::Value trackedObjectJson;
@@ -303,7 +324,8 @@ std::string Timeline::GetTrackedObjectValues(std::string id, int64_t frame_numbe
 	// Search for the tracked object on the map
 	auto iterator = tracked_objects.find(id);
 
-	if (iterator != tracked_objects.end())
+	if (iterator != tracked_objects.end() &&
+		!std::static_pointer_cast<TrackedObjectBBox>(iterator->second)->BoxVec.empty())
 	{
 		// Id found, Get the object pointer and cast it as a TrackedObjectBBox
 		std::shared_ptr<TrackedObjectBBox> trackedObject = std::static_pointer_cast<TrackedObjectBBox>(iterator->second);
@@ -322,7 +344,7 @@ std::string Timeline::GetTrackedObjectValues(std::string id, int64_t frame_numbe
 			trackedObjectJson["x2"] = x2;
 			trackedObjectJson["y2"] = y2;
 			trackedObjectJson["rotation"] = rotation;
-		
+
 		} else {
 			BBox box = trackedObject->BoxVec.begin()->second;
 			float x1 = box.cx - (box.width/2);
@@ -346,7 +368,7 @@ std::string Timeline::GetTrackedObjectValues(std::string id, int64_t frame_numbe
 		trackedObjectJson["x2"] = 0;
 		trackedObjectJson["y2"] = 0;
 		trackedObjectJson["rotation"] = 0;
-	}	
+	}
 
 	return trackedObjectJson.toStyledString();
 }
@@ -355,21 +377,27 @@ std::string Timeline::GetTrackedObjectValues(std::string id, int64_t frame_numbe
 // Add an openshot::Clip to the timeline
 void Timeline::AddClip(Clip* clip)
 {
+	// Get lock (prevent getting frames while this happens)
+	const std::lock_guard<std::recursive_mutex> guard(getFrameMutex);
+
 	// Assign timeline to clip
 	clip->ParentTimeline(this);
 
 	// Clear cache of clip and nested reader (if any)
-	clip->cache.Clear();
 	if (clip->Reader() && clip->Reader()->GetCache())
 		clip->Reader()->GetCache()->Clear();
 
 	// All clips should be converted to the frame rate of this timeline
-	if (auto_map_clips)
+	if (auto_map_clips) {
 		// Apply framemapper (or update existing framemapper)
 		apply_mapper_to_clip(clip);
+	}
+
+	InvalidateCacheForClip(clip);
 
 	// Add clip to list
 	clips.push_back(clip);
+	clip->registered_timeline = this;
 
 	// Sort clips
 	sort_clips();
@@ -378,6 +406,9 @@ void Timeline::AddClip(Clip* clip)
 // Add an effect to the timeline
 void Timeline::AddEffect(EffectBase* effect)
 {
+	// Get lock (prevent getting frames while this happens)
+	const std::lock_guard<std::recursive_mutex> guard(getFrameMutex);
+
 	// Assign timeline to effect
 	effect->ParentTimeline(this);
 
@@ -391,13 +422,88 @@ void Timeline::AddEffect(EffectBase* effect)
 // Remove an effect from the timeline
 void Timeline::RemoveEffect(EffectBase* effect)
 {
+	// Get lock (prevent getting frames while this happens)
+	const std::lock_guard<std::recursive_mutex> guard(getFrameMutex);
+
+	// JSON effect deletions can target an effect belonging to a clip.
+	auto owner = std::find(clips.begin(), clips.end(), effect->ParentClip());
+	if (owner != clips.end())
+		(*owner)->RemoveEffect(effect);
+
 	effects.remove(effect);
+
+	// Delete effect object (if timeline allocated it)
+	if (allocated_effects.count(effect)) {
+		allocated_effects.erase(effect); // erase before nulling the pointer
+		delete effect;
+		effect = NULL;
+	}
+
+	// Sort effects
+	sort_effects();
+}
+
+// A borrowed clip can die before its timeline (for example a region preview).
+// Do not dereference the clip's effect list while its owner is being destroyed.
+void Timeline::ForgetClip(Clip* clip)
+{
+	const std::lock_guard<std::recursive_mutex> guard(getFrameMutex);
+	clip->registered_timeline = nullptr;
+	clips.remove(clip);
+	allocated_clips.erase(clip);
+	open_clips.erase(clip);
+	closing_clips.remove(clip);
+	for (auto it = tracked_objects.begin(); it != tracked_objects.end();) {
+		if (it->second->ParentClip() == clip) {
+			it->second->ParentClip(nullptr);
+			it = tracked_objects.erase(it);
+		} else {
+			++it;
+		}
+	}
+	ClearAllCache();
+	sort_clips();
 }
 
 // Remove an openshot::Clip to the timeline
 void Timeline::RemoveClip(Clip* clip)
 {
+	// Get lock (prevent getting frames while this happens)
+	const std::lock_guard<std::recursive_mutex> guard(getFrameMutex);
+
+	if (std::find(clips.begin(), clips.end(), clip) == clips.end())
+		return;
+
+	bool has_children = false;
+	for (auto child : clips) {
+		if (child == clip)
+			continue;
+		auto object = child->GetParentTrackedObject();
+		if (child->GetParentClip() == clip || (object && object->ParentClip() == clip))
+			has_children = true;
+	}
+
+	update_open_clips(clip, false);
 	clips.remove(clip);
+	RefreshTrackedObjects();
+	clip->registered_timeline = nullptr;
+	clip->ParentTimeline(nullptr);
+	for (auto child : clips)
+		child->AttachToObject(child->GetAttachedId());
+	if (has_children)
+		ClearAllCache();
+	else
+		InvalidateCacheForClip(clip);
+	
+	// Delete clip object (if timeline allocated it)
+	if (allocated_clips.count(clip)) {
+		allocated_clips.erase(clip);         // erase before nulling the pointer
+		delete clip;
+		clip = NULL;
+	}
+
+	// Sort clips
+	sort_clips();
 }
 
 // Look up a clip
@@ -444,7 +550,7 @@ std::list<openshot::EffectBase*> Timeline::ClipEffects() const {
 
 	// Loop through all clips
 	for (const auto& clip : clips) {
-		
+
 		// Get the clip's list of effects
 		std::list<EffectBase*> clipEffectsList = clip->Effects();
 
@@ -457,34 +563,42 @@ std::list<openshot::EffectBase*> Timeline::ClipEffects() const {
 
 // Compute the end time of the latest timeline element
 double Timeline::GetMaxTime() {
-	double last_clip = 0.0;
-	double last_effect = 0.0;
-
-	if (!clips.empty()) {
-		const auto max_clip = std::max_element(
-				clips.begin(), clips.end(), CompareClipEndFrames());
-		last_clip = (*max_clip)->Position() + (*max_clip)->Duration();
-	}
-	if (!effects.empty()) {
-		const auto max_effect = std::max_element(
-				effects.begin(), effects.end(), CompareEffectEndFrames());
-		last_effect = (*max_effect)->Position() + (*max_effect)->Duration();
-	}
-	return std::max(last_clip, last_effect);
+	// Return cached max_time variable (threadsafe)
+	return max_time;
 }
 
 // Compute the highest frame# based on the latest time and FPS
 int64_t Timeline::GetMaxFrame() {
-	double fps = info.fps.ToDouble();
-	auto max_time = GetMaxTime();
-	return std::round(max_time * fps) + 1;
+	const double fps = info.fps.ToDouble();
+	const double t = GetMaxTime();
+	const double frames = t * fps;
+	constexpr double frame_boundary_epsilon = 1e-4;
+
+	// End is exclusive; ignore tiny float overshoots at frame boundaries.
+	if (frames > 0.0 && frames < frame_boundary_epsilon)
+		return 1;
+	return static_cast<int64_t>(std::ceil(frames - frame_boundary_epsilon));
+}
+
+// Compute the first frame# based on the first clip position
+int64_t Timeline::GetMinFrame() {
+	const double fps = info.fps.ToDouble();
+	const double t = GetMinTime();
+	// Inclusive start -> floor at the start boundary, then 1-index
+	return static_cast<int64_t>(std::floor(t * fps)) + 1;
+}
+
+// Compute the start time of the first timeline clip
+double Timeline::GetMinTime() {
+	// Return cached min_time variable (threadsafe)
+	return min_time;
 }
 
 // Apply a FrameMapper to a clip which matches the settings of this timeline
 void Timeline::apply_mapper_to_clip(Clip* clip)
 {
-    // Get lock (prevent getting frames while this happens)
-    const GenericScopedLock<CriticalSection> lock(getFrameCriticalSection);
+	// Serialize mapper replacement/reconfiguration with active frame generation.
+	const std::lock_guard<std::recursive_mutex> guard(getFrameMutex);
 
 	// Determine type of reader
 	ReaderBase* clip_reader = NULL;
@@ -493,6 +607,10 @@ void Timeline::apply_mapper_to_clip(Clip* clip)
 		// Get the existing reader
 		clip_reader = (ReaderBase*) clip->Reader();
 
+		// Update the mapping
+		FrameMapper* clip_mapped_reader = (FrameMapper*) clip_reader;
+		clip_mapped_reader->ChangeMapping(info.fps, PULLDOWN_NONE, info.sample_rate, info.channels, info.channel_layout);
+
 	} else {
 
 		// Create a new FrameMapper to wrap the current reader
@@ -500,10 +618,6 @@ void Timeline::apply_mapper_to_clip(Clip* clip)
 		allocated_frame_mappers.insert(mapper);
 		clip_reader = (ReaderBase*) mapper;
 	}
-
-	// Update the mapping
-	FrameMapper* clip_mapped_reader = (FrameMapper*) clip_reader;
-	clip_mapped_reader->ChangeMapping(info.fps, PULLDOWN_NONE, info.sample_rate, info.channels, info.channel_layout);
 
 	// Update clip reader
 	clip->Reader(clip_reader);
@@ -527,42 +641,55 @@ void Timeline::ApplyMapperToClips()
 double Timeline::calculate_time(int64_t number, Fraction rate)
 {
 	// Get float version of fps fraction
-    double raw_fps = rate.ToFloat();
+	double raw_fps = rate.ToFloat();
 
 	// Return the time (in seconds) of this frame
 	return double(number - 1) / raw_fps;
 }
 
 // Apply effects to the source frame (if any)
-std::shared_ptr<Frame> Timeline::apply_effects(std::shared_ptr<Frame> frame, int64_t timeline_frame_number, int layer)
+std::shared_ptr<Frame> Timeline::apply_effects(std::shared_ptr<Frame> frame, int64_t timeline_frame_number, int layer, TimelineInfoStruct* options)
 {
 	// Debug output
-	ZmqLogger::Instance()->AppendDebugMethod("Timeline::apply_effects", "frame->number", frame->number, "timeline_frame_number", timeline_frame_number, "layer", layer);
+	Logger::Instance()->AppendDebugMethod(
+		"Timeline::apply_effects",
+		"frame->number", frame->number,
+		"timeline_frame_number", timeline_frame_number,
+		"layer", layer);
 
 	// Find Effects at this position and layer
 	for (auto effect : effects)
 	{
 		// Does clip intersect the current requested time
-		long effect_start_position = round(effect->Position() * info.fps.ToDouble()) + 1;
-		long effect_end_position = round((effect->Position() + (effect->Duration())) * info.fps.ToDouble()) + 1;
+		const double fpsD = info.fps.ToDouble();
+		int64_t effect_start_position = static_cast<int64_t>(std::llround(effect->Position() * fpsD)) + 1;
+		int64_t effect_end_position   = static_cast<int64_t>(std::llround((effect->Position() + effect->Duration()) * fpsD));
 
 		bool does_effect_intersect = (effect_start_position <= timeline_frame_number && effect_end_position >= timeline_frame_number && effect->Layer() == layer);
-
-		// Debug output
-		ZmqLogger::Instance()->AppendDebugMethod("Timeline::apply_effects (Does effect intersect)", "effect->Position()", effect->Position(), "does_effect_intersect", does_effect_intersect, "timeline_frame_number", timeline_frame_number, "layer", layer);
 
 		// Clip is visible
 		if (does_effect_intersect)
 		{
 			// Determine the frame needed for this clip (based on the position on the timeline)
-            long effect_start_frame = (effect->Start() * info.fps.ToDouble()) + 1;
-			long effect_frame_number = timeline_frame_number - effect_start_position + effect_start_frame;
+			int64_t effect_start_frame  = static_cast<int64_t>(std::llround(effect->Start() * fpsD)) + 1;
+			int64_t effect_frame_number = timeline_frame_number - effect_start_position + effect_start_frame;
+
+			if (!options->is_top_clip)
+				continue; // skip effect, if overlapped/covered by another clip on same layer
+
+			if (options->is_before_clip_keyframes != effect->info.apply_before_clip)
+				continue; // skip effect, if this filter does not match
 
 			// Debug output
-			ZmqLogger::Instance()->AppendDebugMethod("Timeline::apply_effects (Process Effect)", "effect_frame_number", effect_frame_number, "does_effect_intersect", does_effect_intersect);
+			Logger::Instance()->AppendDebugMethod(
+				"Timeline::apply_effects (Process Effect)",
+				"effect_frame_number", effect_frame_number,
+				"does_effect_intersect", does_effect_intersect);
 
 			// Apply the effect to this frame
-			frame = effect->GetFrame(frame, effect_frame_number);
+			gpu_metrics::Reason gpu_reason("Effect");
+			frame = effect->ProcessFrame(frame, effect_frame_number);
+			if (effect->info.has_video) gpu_metrics::RecordRender(*frame);
 		}
 
 	} // end effect loop
@@ -581,7 +708,10 @@ std::shared_ptr<Frame> Timeline::GetOrCreateFrame(std::shared_ptr<Frame> backgro
 
 	try {
 		// Debug output
-		ZmqLogger::Instance()->AppendDebugMethod("Timeline::GetOrCreateFrame (from reader)", "number", number, "samples_in_frame", samples_in_frame);
+		Logger::Instance()->AppendDebugMethod(
+			"Timeline::GetOrCreateFrame (from reader)",
+			"number", number,
+			"samples_in_frame", samples_in_frame);
 
 		// Attempt to get a frame (but this could fail if a reader has just been closed)
 		new_frame = std::shared_ptr<Frame>(clip->GetFrame(background_frame, number, options));
@@ -596,7 +726,10 @@ std::shared_ptr<Frame> Timeline::GetOrCreateFrame(std::shared_ptr<Frame> backgro
 	}
 
 	// Debug output
-	ZmqLogger::Instance()->AppendDebugMethod("Timeline::GetOrCreateFrame (create blank)", "number", number, "samples_in_frame", samples_in_frame);
+	Logger::Instance()->AppendDebugMethod(
+		"Timeline::GetOrCreateFrame (create blank)",
+		"number", number,
+		"samples_in_frame", samples_in_frame);
 
 	// Create blank frame
 	return new_frame;
@@ -605,33 +738,52 @@ std::shared_ptr<Frame> Timeline::GetOrCreateFrame(std::shared_ptr<Frame> backgro
 // Process a new layer of video or audio
 void Timeline::add_layer(std::shared_ptr<Frame> new_frame, Clip* source_clip, int64_t clip_frame_number, bool is_top_clip, float max_volume)
 {
-    // Create timeline options (with details about this current frame request)
-    TimelineInfoStruct* options = new TimelineInfoStruct();
-    options->is_top_clip = is_top_clip;
+	// Create timeline options (with details about this current frame request)
+	TimelineInfoStruct options{};
+	options.is_top_clip = is_top_clip;
+	options.is_before_clip_keyframes = true;
 
-    // Get the clip's frame, composited on top of the current timeline frame
+	// Get the clip's frame, composited on top of the current timeline frame
 	std::shared_ptr<Frame> source_frame;
-	source_frame = GetOrCreateFrame(new_frame, source_clip, clip_frame_number, options);
-    delete options;
+	source_frame = GetOrCreateFrame(new_frame, source_clip, clip_frame_number, &options);
 
 	// No frame found... so bail
 	if (!source_frame)
 		return;
 
 	// Debug output
-	ZmqLogger::Instance()->AppendDebugMethod("Timeline::add_layer", "new_frame->number", new_frame->number, "clip_frame_number", clip_frame_number);
+	Logger::Instance()->AppendDebugMethod(
+		"Timeline::add_layer",
+		"new_frame->number", new_frame->number,
+		"clip_frame_number", clip_frame_number);
 
 	/* COPY AUDIO - with correct volume */
 	if (source_clip->Reader()->info.has_audio) {
 		// Debug output
-		ZmqLogger::Instance()->AppendDebugMethod("Timeline::add_layer (Copy Audio)", "source_clip->Reader()->info.has_audio", source_clip->Reader()->info.has_audio, "source_frame->GetAudioChannelsCount()", source_frame->GetAudioChannelsCount(), "info.channels", info.channels, "clip_frame_number", clip_frame_number);
+		Logger::Instance()->AppendDebugMethod(
+			"Timeline::add_layer (Copy Audio)",
+			"source_clip->Reader()->info.has_audio", source_clip->Reader()->info.has_audio,
+			"source_frame->GetAudioChannelsCount()", source_frame->GetAudioChannelsCount(),
+			"info.channels", info.channels,
+			"clip_frame_number", clip_frame_number);
 
 		if (source_frame->GetAudioChannelsCount() == info.channels && source_clip->has_audio.GetInt(clip_frame_number) != 0)
+		{
+			// Ensure timeline frame matches the source samples once per frame
+			if (new_frame->GetAudioSamplesCount() != source_frame->GetAudioSamplesCount()){
+				new_frame->ResizeAudio(info.channels, source_frame->GetAudioSamplesCount(), info.sample_rate, info.channel_layout);
+			}
+
+			// Apply transition-driven equal-power audio fades for clips covered by a Mask transition.
+			const auto transition_audio_gains = ResolveTransitionAudioGains(source_clip, new_frame->number, is_top_clip);
+
 			for (int channel = 0; channel < source_frame->GetAudioChannelsCount(); channel++)
 			{
 				// Get volume from previous frame and this frame
 				float previous_volume = source_clip->volume.GetValue(clip_frame_number - 1);
 				float volume = source_clip->volume.GetValue(clip_frame_number);
+				previous_volume *= transition_audio_gains.first;
+				volume *= transition_audio_gains.second;
 				int channel_filter = source_clip->channel_filter.GetInt(clip_frame_number); // optional channel to filter (if not -1)
 				int channel_mapping = source_clip->channel_mapping.GetInt(clip_frame_number); // optional channel to map this channel to (if not -1)
 
@@ -663,34 +815,67 @@ void Timeline::add_layer(std::shared_ptr<Frame> new_frame, Clip* source_clip, in
 				if (!isEqual(previous_volume, 1.0) || !isEqual(volume, 1.0))
 					source_frame->ApplyGainRamp(channel_mapping, 0, source_frame->GetAudioSamplesCount(), previous_volume, volume);
 
-				// TODO: Improve FrameMapper (or Timeline) to always get the correct number of samples per frame.
-				// Currently, the ResampleContext sometimes leaves behind a few samples for the next call, and the
-				// number of samples returned is variable... and does not match the number expected.
-				// This is a crude solution at best. =)
-				if (new_frame->GetAudioSamplesCount() != source_frame->GetAudioSamplesCount()){
-					// Force timeline frame to match the source frame
-					new_frame->ResizeAudio(info.channels, source_frame->GetAudioSamplesCount(), info.sample_rate, info.channel_layout);
-				}
 				// Copy audio samples (and set initial volume).  Mix samples with existing audio samples.  The gains are added together, to
 				// be sure to set the gain's correctly, so the sum does not exceed 1.0 (of audio distortion will happen).
 				new_frame->AddAudio(false, channel_mapping, 0, source_frame->GetAudioSamples(channel), source_frame->GetAudioSamplesCount(), 1.0);
 			}
+		}
 		else
 			// Debug output
-			ZmqLogger::Instance()->AppendDebugMethod("Timeline::add_layer (No Audio Copied - Wrong # of Channels)", "source_clip->Reader()->info.has_audio", source_clip->Reader()->info.has_audio, "source_frame->GetAudioChannelsCount()", source_frame->GetAudioChannelsCount(), "info.channels", info.channels, "clip_frame_number", clip_frame_number);
+			Logger::Instance()->AppendDebugMethod(
+				"Timeline::add_layer (No Audio Copied - Wrong # of Channels)",
+				"source_clip->Reader()->info.has_audio",
+					source_clip->Reader()->info.has_audio,
+				"source_frame->GetAudioChannelsCount()",
+					source_frame->GetAudioChannelsCount(),
+				"info.channels", info.channels,
+				"clip_frame_number", clip_frame_number);
 	}
 
 	// Debug output
-	ZmqLogger::Instance()->AppendDebugMethod("Timeline::add_layer (Transform: Composite Image Layer: Completed)", "source_frame->number", source_frame->number, "new_frame->GetImage()->width()", new_frame->GetImage()->width());
+	Logger::Instance()->AppendDebugMethod(
+		"Timeline::add_layer (Transform: Composite Image Layer: Completed)",
+		"source_frame->number", source_frame->number,
+		"new_frame->GetImage()->width()", new_frame->GetWidth(),
+		"new_frame->GetImage()->height()", new_frame->GetHeight());
 }
 
 // Update the list of 'opened' clips
 void Timeline::update_open_clips(Clip *clip, bool does_clip_intersect)
 {
-	ZmqLogger::Instance()->AppendDebugMethod("Timeline::update_open_clips (before)", "does_clip_intersect", does_clip_intersect, "closing_clips.size()", closing_clips.size(), "open_clips.size()", open_clips.size());
+	// Get lock (prevent getting frames while this happens)
+	const std::lock_guard<std::recursive_mutex> guard(getFrameMutex);
+
+	Logger::Instance()->AppendDebugMethod(
+		"Timeline::update_open_clips (before)",
+		"does_clip_intersect", does_clip_intersect,
+		"closing_clips.size()", closing_clips.size(),
+		"open_clips.size()", open_clips.size());
 
 	// is clip already in list?
 	bool clip_found = open_clips.count(clip);
+
+	// The registry, Clip, and nested Reader can become inconsistent after a
+	// transient reader close. Trust the actual objects over open_clips and run
+	// them through a clean Close/Open cycle while this clip still intersects.
+	// Otherwise FrameMapper converts ReaderClosed into a black frame which can
+	// be repeatedly cached on every still-intersecting timing update.
+	if (clip_found && does_clip_intersect)
+	{
+		bool clip_reader_open = false;
+		try {
+			clip_reader_open = clip->Reader() && clip->Reader()->IsOpen();
+		} catch (const ReaderClosed & e) {
+			// A missing/replaced reader is equivalent to a closed reader here.
+			clip_reader_open = false;
+		}
+		if (!clip->IsOpen() || !clip_reader_open)
+		{
+			open_clips.erase(clip);
+			clip->Close();
+			clip_found = false;
+		}
+	}
 
 	if (clip_found && !does_clip_intersect)
 	{
@@ -702,12 +887,11 @@ void Timeline::update_open_clips(Clip *clip, bool does_clip_intersect)
 	}
 	else if (!clip_found && does_clip_intersect)
 	{
-		// Add clip to 'opened' list, because it's missing
-		open_clips[clip] = clip;
-
 		try {
 			// Open the clip
 			clip->Open();
+			// Add clip to 'opened' list only after a successful open.
+			open_clips[clip] = clip;
 
 		} catch (const InvalidFile & e) {
 			// ...
@@ -715,30 +899,153 @@ void Timeline::update_open_clips(Clip *clip, bool does_clip_intersect)
 	}
 
 	// Debug output
-	ZmqLogger::Instance()->AppendDebugMethod("Timeline::update_open_clips (after)", "does_clip_intersect", does_clip_intersect, "clip_found", clip_found, "closing_clips.size()", closing_clips.size(), "open_clips.size()", open_clips.size());
+	Logger::Instance()->AppendDebugMethod(
+		"Timeline::update_open_clips (after)",
+		"does_clip_intersect", does_clip_intersect,
+		"clip_found", clip_found,
+		"closing_clips.size()", closing_clips.size(),
+		"open_clips.size()", open_clips.size());
+}
+
+// Calculate the max and min duration (in seconds) of the timeline, based on all the clips, and cache the value
+void Timeline::calculate_max_duration() {
+	double last_clip = 0.0;
+	double last_effect = 0.0;
+	double first_clip = std::numeric_limits<double>::max();
+	double first_effect = std::numeric_limits<double>::max();
+
+	// Find the last and first clip
+	if (!clips.empty()) {
+		// Find the clip with the maximum end frame
+		const auto max_clip = std::max_element(
+			clips.begin(), clips.end(), CompareClipEndFrames());
+		last_clip = (*max_clip)->Position() + (*max_clip)->Duration();
+
+		// Find the clip with the minimum start position (ignoring layer)
+		const auto min_clip = std::min_element(
+			clips.begin(), clips.end(), [](const openshot::Clip* lhs, const openshot::Clip* rhs) {
+				return lhs->Position() < rhs->Position();
+			});
+		first_clip = (*min_clip)->Position();
+	}
+
+	// Find the last and first effect
+	if (!effects.empty()) {
+		// Find the effect with the maximum end frame
+		const auto max_effect = std::max_element(
+			effects.begin(), effects.end(), CompareEffectEndFrames());
+		last_effect = (*max_effect)->Position() + (*max_effect)->Duration();
+
+		// Find the effect with the minimum start position
+		const auto min_effect = std::min_element(
+			effects.begin(), effects.end(), [](const openshot::EffectBase* lhs, const openshot::EffectBase* rhs) {
+				return lhs->Position() < rhs->Position();
+			});
+		first_effect = (*min_effect)->Position();
+	}
+
+	// Calculate the max and min time
+	max_time = std::max(last_clip, last_effect);
+	min_time = std::min(first_clip, first_effect);
+
+	// If no clips or effects exist, set min_time to 0
+	if (clips.empty() && effects.empty()) {
+		min_time = 0.0;
+		max_time = 0.0;
+	}
 }
 
 // Sort clips by position on the timeline
 void Timeline::sort_clips()
 {
+	// Get lock (prevent getting frames while this happens)
+	const std::lock_guard<std::recursive_mutex> guard(getFrameMutex);
+
 	// Debug output
-	ZmqLogger::Instance()->AppendDebugMethod("Timeline::SortClips", "clips.size()", clips.size());
+	Logger::Instance()->AppendDebugMethod(
+		"Timeline::SortClips",
+		"clips.size()", clips.size());
 
 	// sort clips
 	clips.sort(CompareClips());
+
+	// calculate max timeline duration
+	calculate_max_duration();
 }
 
 // Sort effects by position on the timeline
 void Timeline::sort_effects()
 {
+	// Get lock (prevent getting frames while this happens)
+	const std::lock_guard<std::recursive_mutex> guard(getFrameMutex);
+
 	// sort clips
 	effects.sort(CompareEffects());
+
+	// calculate max timeline duration
+	calculate_max_duration();
+}
+
+// Clear all clips from timeline
+void Timeline::Clear()
+{
+	Logger::Instance()->AppendDebugMethod("Timeline::Clear");
+
+	// Get lock (prevent getting frames while this happens)
+	const std::lock_guard<std::recursive_mutex> guard(getFrameMutex);
+    live_transform_scales.clear();
+
+	for (const auto& entry : tracked_objects)
+		entry.second->ParentClip(nullptr);
+	tracked_objects.clear();
+
+	// Close all open clips
+	for (auto clip : clips)
+	{
+		update_open_clips(clip, false);
+		clip->registered_timeline = nullptr;
+		clip->ParentTimeline(nullptr);
+
+		// Delete clip object (if timeline allocated it)
+		bool allocated = allocated_clips.count(clip);
+		if (allocated) {
+			delete clip;
+		}
+	}
+	// Clear all clips
+	clips.clear();
+	allocated_clips.clear();
+
+	// Close all effects
+	for (auto effect : effects)
+	{
+		// Delete effect object (if timeline allocated it)
+		bool allocated = allocated_effects.count(effect);
+		if (allocated) {
+			delete effect;
+		}
+	}
+	// Clear all effects
+	effects.clear();
+	allocated_effects.clear();
+
+	// Delete all FrameMappers
+	for (auto mapper : allocated_frame_mappers)
+	{
+		mapper->Reader(NULL);
+		mapper->Close();
+		delete mapper;
+	}
+	allocated_frame_mappers.clear();
 }
 
 // Close the reader (and any resources it was consuming)
 void Timeline::Close()
 {
-	ZmqLogger::Instance()->AppendDebugMethod("Timeline::Close");
+	Logger::Instance()->AppendDebugMethod("Timeline::Close");
+
+	// Get lock (prevent getting frames while this happens)
+	const std::lock_guard<std::recursive_mutex> guard(getFrameMutex);
 
 	// Close all open clips
 	for (auto clip : clips)
@@ -750,9 +1057,8 @@ void Timeline::Close()
 	// Mark timeline as closed
 	is_open = false;
 
-	// Clear cache
-	if (final_cache)
-		final_cache->Clear();
+	// Clear all cache (deep clear, including nested Readers)
+	ClearAllCache(true);
 }
 
 // Open the reader (and start consuming resources)
@@ -770,150 +1076,194 @@ bool Timeline::isEqual(double a, double b)
 // Get an openshot::Frame object for a specific frame number of this reader.
 std::shared_ptr<Frame> Timeline::GetFrame(int64_t requested_frame)
 {
-
+    gpu_metrics::Scope gpu_scope(gpu_metrics_export);
 	// Adjust out of bounds frame number
 	if (requested_frame < 1)
 		requested_frame = 1;
+	const int64_t max_frame = GetMaxFrame();
+	const bool past_timeline_end = (max_frame > 0 && requested_frame > max_frame);
 
 	// Check cache
+    const uint64_t lookup_epoch = CacheEpoch();
 	std::shared_ptr<Frame> frame;
-	std::lock_guard<std::mutex> guard(get_frame_mutex);
-	frame = final_cache->GetFrame(requested_frame);
-	if (frame) {
+	if (!past_timeline_end && !CacheRefreshPending())
+		frame = final_cache->GetFrame(requested_frame);
+	if (frame && !CacheRefreshPending() && CacheEpoch() == lookup_epoch) {
 		// Debug output
-		ZmqLogger::Instance()->AppendDebugMethod("Timeline::GetFrame (Cached frame found)", "requested_frame", requested_frame);
+		Logger::Instance()->AppendDebugMethod(
+			"Timeline::GetFrame (Cached frame found)",
+			"requested_frame", requested_frame);
 
 		// Return cached frame
 		return frame;
 	}
 	else
 	{
-		// Create a scoped lock, allowing only a single thread to run the following code at one time
-		const GenericScopedLock<CriticalSection> lock(getFrameCriticalSection);
+		// Prevent async calls to the following code
+		const std::lock_guard<std::recursive_mutex> lock(getFrameMutex);
+        if (CacheRefreshPending())
+            ClearAllCache();
+        const uint64_t decode_epoch = CacheEpoch();
 
-		// Check for open reader (or throw exception)
-		if (!is_open)
-			throw ReaderClosed("The Timeline is closed.  Call Open() before calling this method.");
-
-		// Check cache again (due to locking)
-		frame = final_cache->GetFrame(requested_frame);
-		if (frame) {
+		// Check cache 2nd time
+		std::shared_ptr<Frame> frame;
+		if (!past_timeline_end)
+			frame = final_cache->GetFrame(requested_frame);
+        if (frame && !CacheRefreshPending() && CacheEpoch() == decode_epoch) {
 			// Debug output
-			ZmqLogger::Instance()->AppendDebugMethod("Timeline::GetFrame (Cached frame found on 2nd look)", "requested_frame", requested_frame);
+			Logger::Instance()->AppendDebugMethod(
+					"Timeline::GetFrame (Cached frame found on 2nd check)",
+					"requested_frame", requested_frame);
 
 			// Return cached frame
 			return frame;
+		} else {
+			// Get a list of clips that intersect with the requested section of timeline
+			// This also opens the readers for intersecting clips, and marks non-intersecting clips as 'needs closing'
+			std::vector<Clip *> nearby_clips;
+			nearby_clips = find_intersecting_clips(requested_frame, 1, true);
+
+			// Debug output
+			Logger::Instance()->AppendDebugMethod(
+					"Timeline::GetFrame (processing frame)",
+					"requested_frame", requested_frame,
+					"omp_get_thread_num()", omp_get_thread_num());
+
+			// Init some basic properties about this frame
+			int samples_in_frame = Frame::GetSamplesPerFrame(requested_frame, info.fps, info.sample_rate, info.channels);
+
+			// Create blank frame (which will become the requested frame)
+			std::shared_ptr<Frame> new_frame(std::make_shared<Frame>(requested_frame, preview_width, preview_height, "#000000", samples_in_frame, info.channels));
+			new_frame->AddAudioSilence(samples_in_frame);
+			new_frame->SampleRate(info.sample_rate);
+			new_frame->ChannelsLayout(info.channel_layout);
+
+			// Debug output
+			Logger::Instance()->AppendDebugMethod(
+					"Timeline::GetFrame (Adding solid color)",
+					"requested_frame", requested_frame,
+					"info.width", info.width,
+					"info.height", info.height);
+
+			// Add Background Color to 1st layer (if animated or not black)
+			if ((color.red.GetCount() > 1 || color.green.GetCount() > 1 || color.blue.GetCount() > 1) ||
+				(color.red.GetValue(requested_frame) != 0.0 || color.green.GetValue(requested_frame) != 0.0 ||
+				 color.blue.GetValue(requested_frame) != 0.0))
+				new_frame->AddColor(preview_width, preview_height, color.GetColorHex(requested_frame));
+
+			// Debug output
+			Logger::Instance()->AppendDebugMethod(
+					"Timeline::GetFrame (Loop through clips)",
+					"requested_frame", requested_frame,
+					"clips.size()", clips.size(),
+					"nearby_clips.size()", nearby_clips.size());
+
+			// Precompute per-clip timing for this requested frame
+			struct ClipInfo {
+				Clip* clip;
+				int64_t start_pos;
+				int64_t end_pos;
+				int64_t start_frame;
+				int64_t frame_number;
+				bool intersects;
+			};
+			std::vector<ClipInfo> clip_infos;
+			clip_infos.reserve(nearby_clips.size());
+			const double fpsD = info.fps.ToDouble();
+
+			for (auto clip : nearby_clips) {
+				int64_t start_pos  = static_cast<int64_t>(std::llround(clip->Position() * fpsD)) + 1;
+				int64_t end_pos    = static_cast<int64_t>(std::llround((clip->Position() + clip->Duration()) * fpsD));
+				bool intersects    = (start_pos <= requested_frame && end_pos >= requested_frame);
+				int64_t start_frame = static_cast<int64_t>(std::llround(clip->Start() * fpsD)) + 1;
+				int64_t frame_number = requested_frame - start_pos + start_frame;
+				clip_infos.push_back({clip, start_pos, end_pos, start_frame, frame_number, intersects});
+			}
+
+			// Determine top clip per layer (linear, no nested loop)
+			std::unordered_map<int, int64_t> top_start_for_layer;
+			std::unordered_map<int, Clip*> top_clip_for_layer;
+			for (const auto& ci : clip_infos) {
+				if (!ci.intersects) continue;
+				const int layer = ci.clip->Layer();
+				auto it = top_start_for_layer.find(layer);
+				// The last composited clip wins ties at the same start frame.
+				if (it == top_start_for_layer.end() || ci.start_pos >= it->second) {
+					top_start_for_layer[layer] = ci.start_pos;
+					top_clip_for_layer[layer]  = ci.clip;
+				}
+			}
+
+			// Compute max_volume across all overlapping clips once
+			float max_volume_sum = 0.0f;
+			for (const auto& ci : clip_infos) {
+				if (!ci.intersects) continue;
+				if (ci.clip->Reader() && ci.clip->Reader()->info.has_audio &&
+				    ci.clip->has_audio.GetInt(ci.frame_number) != 0) {
+					max_volume_sum += static_cast<float>(ci.clip->volume.GetValue(ci.frame_number));
+				}
+			}
+
+			// Compose intersecting clips in a single pass
+			for (const auto& ci : clip_infos) {
+				// Debug output
+				Logger::Instance()->AppendDebugMethod(
+						"Timeline::GetFrame (Does clip intersect)",
+						"requested_frame", requested_frame,
+						"clip->Position()", ci.clip->Position(),
+						"clip->Duration()", ci.clip->Duration(),
+						"does_clip_intersect", ci.intersects);
+
+				// Clip is visible
+				if (ci.intersects) {
+					// Is this the top clip on its layer?
+					bool is_top_clip = false;
+					const int layer = ci.clip->Layer();
+					auto top_it = top_clip_for_layer.find(layer);
+					if (top_it != top_clip_for_layer.end())
+						is_top_clip = (top_it->second == ci.clip);
+
+					// Determine the frame needed for this clip (based on the position on the timeline)
+					int64_t clip_frame_number = ci.frame_number;
+
+					// Debug output
+					Logger::Instance()->AppendDebugMethod(
+							"Timeline::GetFrame (Calculate clip's frame #)",
+							"clip->Position()", ci.clip->Position(),
+							"clip->Start()", ci.clip->Start(),
+							"info.fps.ToFloat()", info.fps.ToFloat(),
+							"clip_frame_number", clip_frame_number);
+
+					// Add clip's frame as layer
+					add_layer(new_frame, ci.clip, clip_frame_number, is_top_clip, max_volume_sum);
+
+				} else {
+					// Debug output
+					Logger::Instance()->AppendDebugMethod(
+							"Timeline::GetFrame (clip does not intersect)",
+							"requested_frame", requested_frame,
+							"does_clip_intersect", ci.intersects);
+				}
+
+			} // end clip loop
+
+			// Debug output
+			Logger::Instance()->AppendDebugMethod(
+					"Timeline::GetFrame (Add frame to cache)",
+					"requested_frame", requested_frame,
+					"info.width", info.width,
+					"info.height", info.height);
+
+			// Set frame # on mapped frame
+			new_frame->SetFrameNumber(requested_frame);
+
+				// Add final frame to cache (only for valid timeline range)
+				if (!past_timeline_end && CacheEpoch() == decode_epoch
+                    && !CacheRefreshPending())
+					final_cache->Add(new_frame);
+			// Return frame (or blank frame)
+			return new_frame;
 		}
-
-		// Check if previous frame was cached? (if not, assume we are seeking somewhere else on the Timeline, and need
-		// to clear all cache (for continuity sake). For example, jumping back to a previous spot can cause issues with audio
-		// data where the new jump location doesn't match up with the previously cached audio data.
-		std::shared_ptr<Frame> previous_frame = final_cache->GetFrame(requested_frame - 1);
-		if (!previous_frame) {
-			// Seeking to new place on timeline (destroy cache)
-			ClearAllCache();
-		}
-
-		// Minimum number of frames to process (for performance reasons)
-		int minimum_frames = OPEN_MP_NUM_PROCESSORS;
-
-		// Get a list of clips that intersect with the requested section of timeline
-		// This also opens the readers for intersecting clips, and marks non-intersecting clips as 'needs closing'
-		std::vector<Clip*> nearby_clips;
-		nearby_clips = find_intersecting_clips(requested_frame, 1, true);
-
-        // Debug output
-        ZmqLogger::Instance()->AppendDebugMethod("Timeline::GetFrame (processing frame)", "requested_frame", requested_frame, "omp_get_thread_num()", omp_get_thread_num());
-
-        // Init some basic properties about this frame
-        int samples_in_frame = Frame::GetSamplesPerFrame(requested_frame, info.fps, info.sample_rate, info.channels);
-
-        // Create blank frame (which will become the requested frame)
-        std::shared_ptr<Frame> new_frame(std::make_shared<Frame>(requested_frame, preview_width, preview_height, "#000000", samples_in_frame, info.channels));
-        new_frame->AddAudioSilence(samples_in_frame);
-        new_frame->SampleRate(info.sample_rate);
-        new_frame->ChannelsLayout(info.channel_layout);
-
-        // Debug output
-        ZmqLogger::Instance()->AppendDebugMethod("Timeline::GetFrame (Adding solid color)", "requested_frame", requested_frame, "info.width", info.width, "info.height", info.height);
-
-        // Add Background Color to 1st layer (if animated or not black)
-        if ((color.red.GetCount() > 1 || color.green.GetCount() > 1 || color.blue.GetCount() > 1) ||
-            (color.red.GetValue(requested_frame) != 0.0 || color.green.GetValue(requested_frame) != 0.0 || color.blue.GetValue(requested_frame) != 0.0))
-        new_frame->AddColor(preview_width, preview_height, color.GetColorHex(requested_frame));
-
-        // Debug output
-        ZmqLogger::Instance()->AppendDebugMethod("Timeline::GetFrame (Loop through clips)", "requested_frame", requested_frame, "clips.size()", clips.size(), "nearby_clips.size()", nearby_clips.size());
-
-        // Find Clips near this time
-        for (auto clip : nearby_clips)
-        {
-            long clip_start_position = round(clip->Position() * info.fps.ToDouble()) + 1;
-            long clip_end_position = round((clip->Position() + clip->Duration()) * info.fps.ToDouble()) + 1;
-
-            bool does_clip_intersect = (clip_start_position <= requested_frame && clip_end_position >= requested_frame);
-
-            // Debug output
-            ZmqLogger::Instance()->AppendDebugMethod("Timeline::GetFrame (Does clip intersect)", "requested_frame", requested_frame, "clip->Position()", clip->Position(), "clip->Duration()", clip->Duration(), "does_clip_intersect", does_clip_intersect);
-
-            // Clip is visible
-            if (does_clip_intersect)
-            {
-                // Determine if clip is "top" clip on this layer (only happens when multiple clips are overlapping)
-                bool is_top_clip = true;
-                float max_volume = 0.0;
-                for (auto nearby_clip : nearby_clips)
-                {
-                    long nearby_clip_start_position = round(nearby_clip->Position() * info.fps.ToDouble()) + 1;
-                    long nearby_clip_end_position = round((nearby_clip->Position() + nearby_clip->Duration()) * info.fps.ToDouble()) + 1;
-                    long nearby_clip_start_frame = (nearby_clip->Start() * info.fps.ToDouble()) + 1;
-                    long nearby_clip_frame_number = requested_frame - nearby_clip_start_position + nearby_clip_start_frame;
-
-                    // Determine if top clip
-                    if (clip->Id() != nearby_clip->Id() && clip->Layer() == nearby_clip->Layer() &&
-                            nearby_clip_start_position <= requested_frame && nearby_clip_end_position >= requested_frame &&
-                            nearby_clip_start_position > clip_start_position && is_top_clip == true) {
-                        is_top_clip = false;
-                    }
-
-                    // Determine max volume of overlapping clips
-                    if (nearby_clip->Reader() && nearby_clip->Reader()->info.has_audio &&
-                            nearby_clip->has_audio.GetInt(nearby_clip_frame_number) != 0 &&
-                            nearby_clip_start_position <= requested_frame && nearby_clip_end_position >= requested_frame) {
-                            max_volume += nearby_clip->volume.GetValue(nearby_clip_frame_number);
-                    }
-                }
-
-                // Determine the frame needed for this clip (based on the position on the timeline)
-                long clip_start_frame = (clip->Start() * info.fps.ToDouble()) + 1;
-                long clip_frame_number = requested_frame - clip_start_position + clip_start_frame;
-
-                // Debug output
-                ZmqLogger::Instance()->AppendDebugMethod("Timeline::GetFrame (Calculate clip's frame #)", "clip->Position()", clip->Position(), "clip->Start()", clip->Start(), "info.fps.ToFloat()", info.fps.ToFloat(), "clip_frame_number", clip_frame_number);
-
-                // Add clip's frame as layer
-                add_layer(new_frame, clip, clip_frame_number, is_top_clip, max_volume);
-
-            } else {
-                // Debug output
-                ZmqLogger::Instance()->AppendDebugMethod("Timeline::GetFrame (clip does not intersect)",
-                                                         "requested_frame", requested_frame, "does_clip_intersect",
-                                                         does_clip_intersect);
-            }
-
-        } // end clip loop
-
-        // Debug output
-        ZmqLogger::Instance()->AppendDebugMethod("Timeline::GetFrame (Add frame to cache)", "requested_frame", requested_frame, "info.width", info.width, "info.height", info.height);
-
-        // Set frame # on mapped frame
-        new_frame->SetFrameNumber(requested_frame);
-
-        // Add final frame to cache
-        final_cache->Add(new_frame);
-
-		// Return frame (or blank frame)
-		return final_cache->GetFrame(requested_frame);
 	}
 }
 
@@ -925,25 +1275,30 @@ std::vector<Clip*> Timeline::find_intersecting_clips(int64_t requested_frame, in
 	std::vector<Clip*> matching_clips;
 
 	// Calculate time of frame
-	float min_requested_frame = requested_frame;
-	float max_requested_frame = requested_frame + (number_of_frames - 1);
-
-	// Re-Sort Clips (since they likely changed)
-	sort_clips();
+	const int64_t min_requested_frame = requested_frame;
+	const int64_t max_requested_frame = requested_frame + (number_of_frames - 1);
 
 	// Find Clips at this time
+	matching_clips.reserve(clips.size());
+	const double fpsD = info.fps.ToDouble();
 	for (auto clip : clips)
 	{
 		// Does clip intersect the current requested time
-		long clip_start_position = round(clip->Position() * info.fps.ToDouble()) + 1;
-		long clip_end_position = round((clip->Position() + clip->Duration()) * info.fps.ToDouble()) + 1;
+		int64_t clip_start_position = static_cast<int64_t>(std::llround(clip->Position() * fpsD)) + 1;
+		int64_t clip_end_position   = static_cast<int64_t>(std::llround((clip->Position() + clip->Duration()) * fpsD)) + 1;
 
 		bool does_clip_intersect =
-                (clip_start_position <= min_requested_frame || clip_start_position <= max_requested_frame) &&
-                (clip_end_position >= min_requested_frame || clip_end_position >= max_requested_frame);
+				(clip_start_position <= min_requested_frame || clip_start_position <= max_requested_frame) &&
+				(clip_end_position >= min_requested_frame || clip_end_position >= max_requested_frame);
 
 		// Debug output
-		ZmqLogger::Instance()->AppendDebugMethod("Timeline::find_intersecting_clips (Is clip near or intersecting)", "requested_frame", requested_frame, "min_requested_frame", min_requested_frame, "max_requested_frame", max_requested_frame, "clip->Position()", clip->Position(), "does_clip_intersect", does_clip_intersect);
+		Logger::Instance()->AppendDebugMethod(
+			"Timeline::find_intersecting_clips (Is clip near or intersecting)",
+			"requested_frame", requested_frame,
+			"min_requested_frame", min_requested_frame,
+			"max_requested_frame", max_requested_frame,
+			"clip->Position()", clip->Position(),
+			"does_clip_intersect", does_clip_intersect);
 
 		// Open (or schedule for closing) this clip, based on if it's intersecting or not
 		update_open_clips(clip, does_clip_intersect);
@@ -965,6 +1320,9 @@ std::vector<Clip*> Timeline::find_intersecting_clips(int64_t requested_frame, in
 
 // Set the cache object used by this reader
 void Timeline::SetCache(CacheBase* new_cache) {
+	// Get lock (prevent getting frames while this happens)
+	const std::lock_guard<std::recursive_mutex> lock(getFrameMutex);
+
 	// Destroy previous cache (if managed by timeline)
 	if (managed_cache && final_cache) {
 		delete final_cache;
@@ -1021,7 +1379,7 @@ Json::Value Timeline::JsonValue() const {
 void Timeline::SetJson(const std::string value) {
 
 	// Get lock (prevent getting frames while this happens)
-	const GenericScopedLock<CriticalSection> lock(getFrameCriticalSection);
+	const std::lock_guard<std::recursive_mutex> lock(getFrameMutex);
 
 	// Parse JSON string into JSON objects
 	try
@@ -1040,7 +1398,10 @@ void Timeline::SetJson(const std::string value) {
 // Load Json::Value into this object
 void Timeline::SetJsonValue(const Json::Value root) {
 
-	// Close timeline before we do anything (this also removes all open and closing clips)
+	// Get lock (prevent getting frames while this happens)
+	const std::lock_guard<std::recursive_mutex> lock(getFrameMutex);
+
+	// Close timeline before we do anything (this closes all clips)
 	bool was_open = is_open;
 	Close();
 
@@ -1052,19 +1413,28 @@ void Timeline::SetJsonValue(const Json::Value root) {
 		path = root["path"].asString();
 
 	if (!root["clips"].isNull()) {
-		// Clear existing clips
-		clips.clear();
+		// Remove old clips through the same cleanup path as an individual deletion.
+		while (!clips.empty())
+			RemoveClip(clips.front());
 
 		// loop through clips
 		for (const Json::Value existing_clip : root["clips"]) {
+			// Skip NULL nodes
+			if (existing_clip.isNull()) {
+				continue;
+			}
+
 			// Create Clip
 			Clip *c = new Clip();
+
+			// Keep track of allocated clip objects
+			allocated_clips.insert(c);
 
 			// When a clip is attached to an object, it searches for the object
 			// on it's parent timeline. Setting the parent timeline of the clip here
 			// allows attaching it to an object when exporting the project (because)
-			// the exporter script initializes the clip and it's effects 
-			// before setting it's parent timeline.
+			// the exporter script initializes the clip and it's effects
+			// before setting its parent timeline.
 			c->ParentTimeline(this);
 
 			// Load Json into Clip
@@ -1081,12 +1451,20 @@ void Timeline::SetJsonValue(const Json::Value root) {
 
 		// loop through effects
 		for (const Json::Value existing_effect :root["effects"]) {
+			// Skip NULL nodes
+			if (existing_effect.isNull()) {
+				continue;
+			}
+
 			// Create Effect
 			EffectBase *e = NULL;
 
 			if (!existing_effect["type"].isNull()) {
 				// Create instance of effect
 				if ( (e = EffectInfo().CreateEffect(existing_effect["type"].asString())) ) {
+
+					// Keep track of allocated effect objects
+					allocated_effects.insert(e);
 
 					// Load Json into Effect
 					e->SetJsonValue(existing_effect);
@@ -1108,38 +1486,53 @@ void Timeline::SetJsonValue(const Json::Value root) {
 	preview_width = info.width;
 	preview_height = info.height;
 
+	// Resort (and recalculate min/max duration)
+	sort_clips();
+	sort_effects();
+
 	// Re-open if needed
 	if (was_open)
 		Open();
+
+	RefreshTrackedObjects();
+	// Timeline content changed: notify cache clients to rescan active window.
+	BumpCacheEpoch();
 }
 
 // Apply a special formatted JSON object, which represents a change to the timeline (insert, update, delete)
 void Timeline::ApplyJsonDiff(std::string value) {
 
-    // Get lock (prevent getting frames while this happens)
-    const GenericScopedLock<CriticalSection> lock(getFrameCriticalSection);
+	// Get lock (prevent getting frames while this happens)
+	const std::lock_guard<std::recursive_mutex> lock(getFrameMutex);
 
 	// Parse JSON string into JSON objects
 	try
 	{
-		const Json::Value root = openshot::stringToJson(value);
-		// Process the JSON change array, loop through each item
-		for (const Json::Value change : root) {
+		Json::Value root = openshot::stringToJson(value);
+		const uint64_t initial_cache_epoch = CacheEpoch();
+		// Each change is owned here and consumed once. Move it through the
+		// existing by-value API instead of copying entire animation curves.
+		for (auto& change : root) {
 			std::string change_key = change["key"][(uint)0].asString();
 
 			// Process each type of change
 			if (change_key == "clips")
 				// Apply to CLIPS
-				apply_json_to_clips(change);
+				apply_json_to_clips(std::move(change));
 
 			else if (change_key == "effects")
 				// Apply to EFFECTS
-				apply_json_to_effects(change);
+				apply_json_to_effects(std::move(change));
 
 			else
 				// Apply to TIMELINE
-				apply_json_to_timeline(change);
+				apply_json_to_timeline(std::move(change));
 
+		}
+
+		// Timeline content changed: notify cache clients to rescan active window.
+		if (!root.empty() && CacheEpoch() == initial_cache_epoch) {
+			BumpCacheEpoch();
 		}
 	}
 	catch (const std::exception& e)
@@ -1147,6 +1540,82 @@ void Timeline::ApplyJsonDiff(std::string value) {
 		// Error parsing JSON (or missing keys)
 		throw InvalidJSON("JSON is invalid (missing keys or invalid data types)");
 	}
+}
+
+void Timeline::BumpCacheEpoch() {
+	cache_epoch.fetch_add(1, std::memory_order_relaxed);
+}
+
+void Timeline::InvalidateCacheForClip(const Clip* clip) {
+	if (!clip || !final_cache) {
+		return;
+	}
+
+	const double fpsD = info.fps.ToDouble();
+	const int64_t starting_frame = static_cast<int64_t>(std::llround(clip->Position() * fpsD)) + 1;
+	const int64_t ending_frame = static_cast<int64_t>(std::llround((clip->Position() + clip->Duration()) * fpsD)) + 1;
+	final_cache->Remove(starting_frame - 8, ending_frame + 8);
+	BumpCacheEpoch();
+}
+
+namespace {
+ReaderBase* TransformSource(Clip* clip) {
+    auto* reader = clip->Reader();
+    if (auto* mapper = dynamic_cast<FrameMapper*>(reader)) reader = mapper->Reader();
+    return reader;
+}
+std::pair<double, double> TransformDetail(Clip* clip) {
+    auto* source = TransformSource(clip);
+    const bool text = dynamic_cast<QtTextReader*>(source);
+    const bool video = dynamic_cast<FFmpegReader*>(source) && source->info.has_video;
+    if (!text && !dynamic_cast<QtImageReader*>(source) && !video && !clip->Waveform()) return {0.0, 0.0};
+    double x = clip->scale_x.GetMaxPoint().co.Y;
+    double y = clip->scale_y.GetMaxPoint().co.Y;
+    if (text || clip->Waveform()) return {std::max({1.0, x, y}), 1.0};
+    if (clip->scale != SCALE_NONE) { x = std::max(1.0, x); y = std::max(1.0, y); }
+    return {x, y};
+}
+bool RefreshTransformSource(Clip* clip) {
+    // Waveforms are regenerated from cached audio after the mapper, so their
+    // refinement must not evict decoded video/audio or rebuild audio mappings.
+    if (clip->Waveform()) return true;
+    auto* source = TransformSource(clip);
+    if (auto* video = dynamic_cast<FFmpegReader*>(source)) {
+        const auto cached = video->GetCache()->GetSmallestFrame();
+        QSize native(video->info.width, video->info.height);
+        if (video->HasMaxDecodeSize() && (native.width() > video->MaxDecodeWidth() || native.height() > video->MaxDecodeHeight()))
+            native.scale(video->MaxDecodeWidth(), video->MaxDecodeHeight(), Qt::KeepAspectRatio);
+        // Once the source is already at native detail, further transforms need
+        // no re-decode. Never throw away full-detail video just to shrink it.
+        if (cached && cached->GetWidth() >= native.width() && cached->GetHeight() >= native.height()) return false;
+    }
+    if (source && source->GetCache()) source->GetCache()->Clear();
+    if (clip->Reader() && clip->Reader()->GetCache()) clip->Reader()->GetCache()->Clear();
+    return true;
+}
+}
+
+void Timeline::BeginClipTransform(const std::string& id) {
+    const std::lock_guard<std::recursive_mutex> lock(getFrameMutex);
+    if (auto* clip = GetClip(id)) live_transform_scales.emplace(id, TransformDetail(clip));
+}
+
+bool Timeline::IsClipTransforming(const std::string& id) {
+    const std::lock_guard<std::recursive_mutex> lock(getFrameMutex);
+    return live_transform_scales.count(id) != 0;
+}
+
+bool Timeline::EndClipTransform(const std::string& id) {
+    const std::lock_guard<std::recursive_mutex> lock(getFrameMutex);
+    const auto found = live_transform_scales.find(id);
+    if (found == live_transform_scales.end()) return false;
+    const auto initial = found->second;
+    live_transform_scales.erase(found);
+    auto* clip = GetClip(id);
+    if (!clip || initial == TransformDetail(clip)) return false;
+    if (!RefreshTransformSource(clip)) return false;
+    InvalidateCacheForClip(clip);
+    return true;
 }
 
 // Apply JSON diff to clips
@@ -1199,12 +1668,17 @@ void Timeline::apply_json_to_clips(Json::Value change) {
 				{
 					if (e->Id() == effect_id) {
 						// Apply the change to the effect directly
-						apply_json_to_effects(change, e);
+						apply_json_to_effects(std::move(change), e);
+
+						// Effect-only diffs must clear the owning clip cache.
+						if (existing_clip->GetCache()) {
+							existing_clip->GetCache()->Clear();
+						}
 
 						// Calculate start and end frames that this impacts, and remove those frames from the cache
-                        int64_t new_starting_frame = (existing_clip->Position() * info.fps.ToDouble()) + 1;
-                        int64_t new_ending_frame = ((existing_clip->Position() + existing_clip->Duration()) * info.fps.ToDouble()) + 1;
-                        final_cache->Remove(new_starting_frame - 8, new_ending_frame + 8);
+						int64_t new_starting_frame = (existing_clip->Position() * info.fps.ToDouble()) + 1;
+						int64_t new_ending_frame = ((existing_clip->Position() + existing_clip->Duration()) * info.fps.ToDouble()) + 1;
+						final_cache->Remove(new_starting_frame - 8, new_ending_frame + 8);
 
 						return; // effect found, don't update clip
 					}
@@ -1213,61 +1687,105 @@ void Timeline::apply_json_to_clips(Json::Value change) {
 		}
 	}
 
-	// Calculate start and end frames that this impacts, and remove those frames from the cache
-	if (!change["value"].isArray() && !change["value"]["position"].isNull()) {
-		int64_t new_starting_frame = (change["value"]["position"].asDouble() * info.fps.ToDouble()) + 1;
-		int64_t new_ending_frame = ((change["value"]["position"].asDouble() + change["value"]["end"].asDouble() - change["value"]["start"].asDouble()) * info.fps.ToDouble()) + 1;
-		final_cache->Remove(new_starting_frame - 8, new_ending_frame + 8);
-	}
+    // Visual edits change compositing, never the source frame/audio mapping.
+    std::unordered_map<std::string, Keyframe*> visual_properties;
+    if (existing_clip) {
+        visual_properties = {{"scale_x", &existing_clip->scale_x}, {"scale_y", &existing_clip->scale_y},
+            {"location_x", &existing_clip->location_x}, {"location_y", &existing_clip->location_y},
+            {"rotation", &existing_clip->rotation}, {"shear_x", &existing_clip->shear_x},
+            {"shear_y", &existing_clip->shear_y}, {"origin_x", &existing_clip->origin_x},
+            {"origin_y", &existing_clip->origin_y}, {"alpha", &existing_clip->alpha},
+            {"margin", &existing_clip->margin}, {"corner_radius", &existing_clip->corner_radius}};
+    }
+    const auto& values = change["value"];
+    bool visual_only = values.isObject() && !values.empty();
+    if (visual_only)
+        for (const auto& name : values.getMemberNames())
+            if (!visual_properties.count(name)) { visual_only = false; break; }
 
 	// Determine type of change operation
 	if (change_type == "insert") {
 
-		// Create new clip
+		// Create clip
 		Clip *clip = new Clip();
-		clip->SetJsonValue(change["value"]); // Set properties of new clip from JSON
-		AddClip(clip); // Add clip to timeline
 
-		// Apply framemapper (or update existing framemapper)
-		apply_mapper_to_clip(clip);
+		// Keep track of allocated clip objects
+		allocated_clips.insert(clip);
+
+		// Match full timeline JSON loading: parent timeline must be available
+		// before clip JSON can inflate nested readers/effects.
+		clip->ParentTimeline(this);
+
+		// Set properties of clip from JSON
+		clip->SetJsonValue(std::move(change["value"]));
+
+		// Add clip to timeline
+		AddClip(clip);
 
 	} else if (change_type == "update") {
 
 		// Update existing clip
 		if (existing_clip) {
-
-			// Calculate start and end frames that this impacts, and remove those frames from the cache
+			// Calculate start and end frames prior to the update
 			int64_t old_starting_frame = (existing_clip->Position() * info.fps.ToDouble()) + 1;
 			int64_t old_ending_frame = ((existing_clip->Position() + existing_clip->Duration()) * info.fps.ToDouble()) + 1;
-			final_cache->Remove(old_starting_frame - 8, old_ending_frame + 8);
-
-            // Remove cache on clip's Reader (if found)
-            if (existing_clip->Reader() && existing_clip->Reader()->GetCache())
-                existing_clip->Reader()->GetCache()->Remove(old_starting_frame - 8, old_ending_frame + 8);
 
 			// Update clip properties from JSON
-			existing_clip->SetJsonValue(change["value"]);
+			if (visual_only) {
+                const bool scale_edit = !values["scale_x"].isNull() || !values["scale_y"].isNull();
+                const bool refresh_detail = scale_edit && !IsClipTransforming(existing_clip->Id());
+                const auto previous_detail = refresh_detail ? TransformDetail(existing_clip) : std::make_pair(0.0, 0.0);
+                for (const auto& name : values.getMemberNames()) {
+                    auto& curve = *visual_properties.at(name);
+                    // Null fields are ignored by Clip::SetJsonValue too.
+                    if (!values[name].isNull())
+                        curve.SetJsonValue(values[name]);
+                    // Match Clip::SetJsonValue when core transform curves are cleared.
+                    if (curve.GetCount() == 0 && name != "alpha" && name != "shear_x" && name != "shear_y")
+                        curve = Keyframe(name == "scale_x" || name == "scale_y" ? 1.0 :
+                                         name == "origin_x" || name == "origin_y" ? 0.5 : 0.0);
+                }
+                // Single property edits refine immediately; a drag refines once
+                // in EndClipTransform, leaving every intermediate sample cheap.
+                if (refresh_detail && previous_detail != TransformDetail(existing_clip))
+                    RefreshTransformSource(existing_clip);
+            } else {
+                existing_clip->SetJsonValue(std::move(change["value"]));
+            }
+
+			// Calculate new start and end frames after the update
+			int64_t new_starting_frame = (existing_clip->Position() * info.fps.ToDouble()) + 1;
+			int64_t new_ending_frame = ((existing_clip->Position() + existing_clip->Duration()) * info.fps.ToDouble()) + 1;
+
+			// Remove both the old and new ranges from the timeline cache
+			final_cache->Remove(old_starting_frame - 8, old_ending_frame + 8);
+            if (new_starting_frame != old_starting_frame || new_ending_frame != old_ending_frame)
+                final_cache->Remove(new_starting_frame - 8, new_ending_frame + 8);
 
 			// Apply framemapper (or update existing framemapper)
-			apply_mapper_to_clip(existing_clip);
+			if (auto_map_clips && !visual_only) {
+				apply_mapper_to_clip(existing_clip);
+			}
 		}
 
 	} else if (change_type == "delete") {
 
 		// Remove existing clip
 		if (existing_clip) {
-
 			// Calculate start and end frames that this impacts, and remove those frames from the cache
 			int64_t old_starting_frame = (existing_clip->Position() * info.fps.ToDouble()) + 1;
 			int64_t old_ending_frame = ((existing_clip->Position() + existing_clip->Duration()) * info.fps.ToDouble()) + 1;
-			final_cache->Remove(old_starting_frame - 8, old_ending_frame + 8);
 
-			// Remove clip from timeline
+			// RemoveClip deletes clips owned by the timeline. Read their bounds first.
 			RemoveClip(existing_clip);
+			final_cache->Remove(old_starting_frame - 8, old_ending_frame + 8);
 		}
 
 	}
 
+	// Re-Sort Clips (since they likely changed)
+	if (change_type != "update" || !visual_only)
+        sort_clips();
 }
 
 // Apply JSON diff to effects
@@ -1301,9 +1819,10 @@ void Timeline::apply_json_to_effects(Json::Value change) {
 	}
 
 	// Now that we found the effect, apply the change to it
-	if (existing_effect || change_type == "insert")
+	if (existing_effect || change_type == "insert") {
 		// Apply change to effect
-		apply_json_to_effects(change, existing_effect);
+		apply_json_to_effects(std::move(change), existing_effect);
+	}
 }
 
 // Apply JSON diff to effects (if you already know which effect needs to be updated)
@@ -1331,8 +1850,11 @@ void Timeline::apply_json_to_effects(Json::Value change, EffectBase* existing_ef
 		// Init the matching effect object
 		if ( (e = EffectInfo().CreateEffect(effect_type)) ) {
 
+			// Keep track of allocated effect objects
+			allocated_effects.insert(e);
+
 			// Load Json into Effect
-			e->SetJsonValue(change["value"]);
+			e->SetJsonValue(std::move(change["value"]));
 
 			// Add Effect to Timeline
 			AddEffect(e);
@@ -1349,7 +1871,7 @@ void Timeline::apply_json_to_effects(Json::Value change, EffectBase* existing_ef
 			final_cache->Remove(old_starting_frame - 8, old_ending_frame + 8);
 
 			// Update effect properties from JSON
-			existing_effect->SetJsonValue(change["value"]);
+			existing_effect->SetJsonValue(std::move(change["value"]));
 		}
 
 	} else if (change_type == "delete") {
@@ -1367,10 +1889,14 @@ void Timeline::apply_json_to_effects(Json::Value change, EffectBase* existing_ef
 		}
 
 	}
+
+	// Re-Sort Effects (since they likely changed)
+	sort_effects();
 }
 
 // Apply JSON diff to timeline properties
 void Timeline::apply_json_to_timeline(Json::Value change) {
+	bool cache_dirty = true;
 
 	// Get key and type of change
 	std::string change_type = change["type"].asString();
@@ -1379,9 +1905,6 @@ void Timeline::apply_json_to_timeline(Json::Value change) {
 	if (change["key"].size() >= 2)
 		sub_key = change["key"][(uint)1].asString();
 
-	// Clear entire cache
-	ClearAllCache();
-
 	// Determine type of change operation
 	if (change_type == "insert" || change_type == "update") {
 
@@ -1389,20 +1912,23 @@ void Timeline::apply_json_to_timeline(Json::Value change) {
 		// Check for valid property
 		if (root_key == "color")
 			// Set color
-			color.SetJsonValue(change["value"]);
+			color.SetJsonValue(std::move(change["value"]));
 		else if (root_key == "viewport_scale")
 			// Set viewport scale
-			viewport_scale.SetJsonValue(change["value"]);
+			viewport_scale.SetJsonValue(std::move(change["value"]));
 		else if (root_key == "viewport_x")
 			// Set viewport x offset
-			viewport_x.SetJsonValue(change["value"]);
+			viewport_x.SetJsonValue(std::move(change["value"]));
 		else if (root_key == "viewport_y")
 			// Set viewport y offset
-			viewport_y.SetJsonValue(change["value"]);
+			viewport_y.SetJsonValue(std::move(change["value"]));
 		else if (root_key == "duration") {
 			// Update duration of timeline
 			info.duration = change["value"].asDouble();
 			info.video_length = info.fps.ToFloat() * info.duration;
+
+			// We don't want to clear cache for duration adjustments
+			cache_dirty = false;
 		}
 		else if (root_key == "width") {
 			// Set width
@@ -1490,47 +2016,195 @@ void Timeline::apply_json_to_timeline(Json::Value change) {
 
 	}
 
+	if (cache_dirty) {
+		// Clear entire cache
+		ClearAllCache();
+	}
+}
+
+// Publish the request sequence first so cache lookups cannot observe a new
+// epoch while treating the old cache as current. Completion has its own sequence
+// so a request arriving during a clear cannot be lost.
+void Timeline::RequestClearAllCache() {
+    cache_clear_requested.fetch_add(1);
+    BumpCacheEpoch();
 }
 
 // Clear all caches
-void Timeline::ClearAllCache() {
-
+void Timeline::ClearAllCache(bool deep) {
 	// Get lock (prevent getting frames while this happens)
-	const GenericScopedLock<CriticalSection> lock(getFrameCriticalSection);
+	const std::lock_guard<std::recursive_mutex> guard(getFrameMutex);
+    // Keep the refresh pending throughout the clear (including the fast cache
+    // hit path outside getFrameMutex). Newer requests remain pending.
+    const uint64_t clear_request = cache_clear_requested.load();
 
-    // Clear primary cache
-    final_cache->Clear();
+	// Clear primary cache
+	if (final_cache) {
+		final_cache->Clear();
+	}
 
-    // Loop through all clips
-    for (auto clip : clips)
-    {
-        // Clear cache on clip
-        clip->Reader()->GetCache()->Clear();
+	// Loop through all clips
+	try {
+		for (const auto clip : clips) {
+			// Clear cache on clip and reader if present
+			if (clip->Reader()) {
+				if (auto rc = clip->Reader()->GetCache())
+					rc->Clear();
 
-        // Clear nested Reader (if any)
-        if (clip->Reader()->Name() == "FrameMapper") {
-			FrameMapper* nested_reader = (FrameMapper*) clip->Reader();
-			if (nested_reader->Reader() && nested_reader->Reader()->GetCache())
-				nested_reader->Reader()->GetCache()->Clear();
+				// Clear nested Reader (if deep clear requested)
+				if (deep && clip->Reader()->Name() == "FrameMapper") {
+					FrameMapper *nested_reader = static_cast<FrameMapper *>(clip->Reader());
+					if (nested_reader->Reader()) {
+						if (auto nc = nested_reader->Reader()->GetCache())
+							nc->Clear();
+					}
+				}
+			}
+
+			// Clear clip cache
+			if (auto cc = clip->GetCache())
+				cc->Clear();
 		}
+	} catch (const ReaderClosed & e) {
+		// ...
+	}
 
-    }
+	// Cache content changed: notify cache clients to rebuild their window baseline.
+	BumpCacheEpoch();
+    cache_clear_completed.store(clear_request);
 }
 
-// Set Max Image Size (used for performance optimization). Convenience function for setting
-// Settings::Instance()->MAX_WIDTH and Settings::Instance()->MAX_HEIGHT.
+// Set the preview size without changing the project's native dimensions.
 void Timeline::SetMaxSize(int width, int height) {
+	// Ignore transient invalid widget sizes (for example while hidden).
+	if (width <= 0 || height <= 0 || info.width <= 0 || info.height <= 0)
+		return;
 	// Maintain aspect ratio regardless of what size is passed in
-	QSize display_ratio_size = QSize(info.display_ratio.num * info.pixel_ratio.ToFloat(), info.display_ratio.den * info.pixel_ratio.ToFloat());
+	QSize display_ratio_size = QSize(info.width, info.height);
 	QSize proposed_size = QSize(std::min(width, info.width), std::min(height, info.height));
 
 	// Scale QSize up to proposed size
 	display_ratio_size.scale(proposed_size, Qt::KeepAspectRatio);
+	// Preserve exact full-resolution output, including non-aligned profiles and
+	// tiny test images. Only reduced previews use the aligned sampling grid.
+	if (display_ratio_size != QSize(info.width, info.height) &&
+		info.width >= 4 && info.height >= 4)
+		display_ratio_size = AlignPreviewSize(display_ratio_size);
 
 	// Update preview settings
 	preview_width = display_ratio_size.width();
 	preview_height = display_ratio_size.height();
+}
 
-	// Update timeline cache size
-    final_cache->SetMaxBytesFromInfo(max_concurrent_frames * 4, preview_width, preview_height, info.sample_rate, info.channels);
+// Resolve equal-power audio gains from transition placement relative to the clip edges.
+std::pair<float, float> Timeline::ResolveTransitionAudioGains(Clip* source_clip, int64_t timeline_frame_number, bool is_top_clip) const
+{
+	constexpr double half_pi = 1.57079632679489661923;
+
+	if (!source_clip)
+		return {1.0f, 1.0f};
+
+	const double fpsD = info.fps.ToDouble();
+	Mask* active_mask = nullptr;
+	int64_t effect_start_position = 0;
+	int64_t effect_end_position = 0;
+
+	// Find the single active transition on this layer that requested overlapping audio fades.
+	for (auto effect : effects) {
+		if (effect->Layer() != source_clip->Layer())
+			continue;
+
+		auto* mask = dynamic_cast<Mask*>(effect);
+		if (!mask || !mask->fade_audio_hint)
+			continue;
+
+		const int64_t start_pos = static_cast<int64_t>(std::llround(effect->Position() * fpsD)) + 1;
+		const int64_t end_pos = static_cast<int64_t>(std::llround((effect->Position() + effect->Duration()) * fpsD));
+		if (start_pos > timeline_frame_number || end_pos < timeline_frame_number)
+			continue;
+
+		if (active_mask)
+			return {1.0f, 1.0f};
+
+		active_mask = mask;
+		effect_start_position = start_pos;
+		effect_end_position = end_pos;
+	}
+
+	if (!active_mask)
+		return {1.0f, 1.0f};
+
+	struct AudibleClipInfo {
+		Clip* clip;
+		int64_t start_pos;
+		int64_t end_pos;
+	};
+
+	std::vector<AudibleClipInfo> audible_clips;
+	audible_clips.reserve(2);
+
+	// Collect the audible clips covered by this transition on the current layer.
+	for (auto clip : clips) {
+		if (clip->Layer() != source_clip->Layer())
+			continue;
+		if (!clip->Reader() || !clip->Reader()->info.has_audio)
+			continue;
+
+		const int64_t clip_start_pos = static_cast<int64_t>(std::llround(clip->Position() * fpsD)) + 1;
+		const int64_t clip_end_pos = static_cast<int64_t>(std::llround((clip->Position() + clip->Duration()) * fpsD));
+		if (clip_start_pos > timeline_frame_number || clip_end_pos < timeline_frame_number)
+			continue;
+
+		const int64_t clip_start_frame = static_cast<int64_t>(std::llround(clip->Start() * fpsD)) + 1;
+		const int64_t clip_frame_number = timeline_frame_number - clip_start_pos + clip_start_frame;
+		if (clip->has_audio.GetInt(clip_frame_number) == 0)
+			continue;
+
+		audible_clips.push_back({clip, clip_start_pos, clip_end_pos});
+		if (audible_clips.size() > 2)
+			return {1.0f, 1.0f};
+	}
+
+	if (audible_clips.empty())
+		return {1.0f, 1.0f};
+
+	// Skip clips that are not actually participating in this transition audio decision.
+	const auto source_it = std::find_if(
+		audible_clips.begin(),
+		audible_clips.end(),
+		[source_clip](const AudibleClipInfo& info) {
+			return info.clip == source_clip;
+		});
+	if (source_it == audible_clips.end())
+		return {1.0f, 1.0f};
+
+	// Keep the current top/non-top clip routing intact when two clips overlap.
+	if (audible_clips.size() == 2) {
+		// Collected in compositing order, including equal-position ties.
+		Clip* top_clip = audible_clips.back().clip;
+		if ((is_top_clip && source_clip != top_clip) || (!is_top_clip && source_clip == top_clip))
+			return {1.0f, 1.0f};
+	}
+
+	// Infer fade direction from which transition edge is closer to this clip.
+	const int64_t left_distance = std::llabs(effect_start_position - source_it->start_pos);
+	const int64_t right_distance = std::llabs(effect_end_position - source_it->end_pos);
+	const bool clip_fades_in = left_distance <= right_distance;
+
+	// Evaluate the current frame and previous frame so Timeline can preserve per-frame gain ramps.
+	const auto compute_gain = [&](int64_t frame_number) -> float {
+		if (effect_end_position <= effect_start_position)
+			return 1.0f;
+
+		const double span = static_cast<double>(effect_end_position - effect_start_position);
+		double t = static_cast<double>(frame_number - effect_start_position) / span;
+		if (t < 0.0)
+			t = 0.0;
+		else if (t > 1.0)
+			t = 1.0;
+
+		return static_cast<float>(clip_fades_in ? std::sin(t * half_pi) : std::cos(t * half_pi));
+	};
+
+	return {compute_gain(timeline_frame_number - 1), compute_gain(timeline_frame_number)};
 }

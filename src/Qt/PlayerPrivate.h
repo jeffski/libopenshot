@@ -7,27 +7,9 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_PLAYER_PRIVATE_H
 #define OPENSHOT_PLAYER_PRIVATE_H
@@ -38,6 +20,8 @@
 #include "../Qt/AudioPlaybackThread.h"
 #include "../Qt/VideoPlaybackThread.h"
 #include "../Qt/VideoCacheThread.h"
+#include <atomic>
+#include <mutex>
 
 namespace openshot
 {
@@ -48,15 +32,21 @@ namespace openshot
     class PlayerPrivate : juce::Thread
     {
     std::shared_ptr<openshot::Frame> frame; /// The current frame
-	int64_t video_position; /// The current frame position.
+	std::mutex frame_mutex; /// Protects frame publication and seek state transitions
+	std::atomic<uint64_t> seek_generation{0};
+    int64_t playback_frames; /// The # of frames since playback started
+	std::atomic<int64_t> video_position; /// The current frame position.
 	int64_t audio_position; /// The current frame position.
 	openshot::ReaderBase *reader; /// The reader which powers this player
 	openshot::AudioPlaybackThread *audioPlayback; /// The audio thread
 	openshot::VideoPlaybackThread *videoPlayback; /// The video thread
 	openshot::VideoCacheThread *videoCache; /// The cache thread
-	int speed; /// The speed and direction to playback a reader (1=normal, 2=fast, 3=faster, -1=rewind, etc...)
+	std::atomic<int> speed; /// The speed and direction to playback a reader (1=normal, 2=fast, 3=faster, -1=rewind, etc...)
+	int last_speed; /// The previous speed and direction (used to detect a change)
 	openshot::RendererBase *renderer;
-	int64_t last_video_position; /// The last frame actually displayed
+	std::atomic<int64_t> last_video_position; /// The last frame actually displayed
+	int max_sleep_ms; /// The max milliseconds to sleep (when syncing audio and video)
+	std::atomic<bool> is_dirty; /// Detect if a frame needs to be refreshed (calls to Seek() set this to true)
 
 	/// Constructor
 	PlayerPrivate(openshot::RendererBase *rb);
@@ -69,13 +59,17 @@ namespace openshot
 	/// Start the video/audio playback
 	bool startPlayback();
 
+	/// Seek to a new frame #
+	void Seek(int64_t new_position);
+
 	/// Stop the video/audio playback
-	void stopPlayback(int timeOutMilliseconds = -1);
+	void stopPlayback();
 
 	/// Get the next frame (based on speed and direction)
 	std::shared_ptr<openshot::Frame> getFrame();
 
 	/// The parent class of PlayerPrivate
+	friend struct AudioPlaybackThreadTestAccess;
 	friend class QtPlayer;
     };
 

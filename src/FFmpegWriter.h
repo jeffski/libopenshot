@@ -3,38 +3,15 @@
  * @brief Header file for FFmpegWriter class
  * @author Jonathan Thomas <jonathan@openshot.org>, Fabrice Bellard
  *
- * @ref License
- */
-
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC, Fabrice Bellard
- * (http://www.openshotstudios.com). This file is part of
- * OpenShot Library (http://www.openshot.org), an open-source project
- * dedicated to delivering high quality video editing and animation solutions
- * to the world.
- *
  * This file is originally based on the Libavformat API example, and then modified
  * by the libopenshot project.
  *
- * OpenShot Library is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- * * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
+ * @ref License
  */
 
+// Copyright (c) 2008-2019 OpenShot Studios, LLC, Fabrice Bellard
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_FFMPEG_WRITER_H
 #define OPENSHOT_FFMPEG_WRITER_H
@@ -45,21 +22,12 @@
 // Include FFmpeg headers and macros
 #include "FFmpegUtilities.h"
 
-#include <cmath>
-#include <ctime>
-#include <unistd.h>
-#include "CacheMemory.h"
-#include "OpenMPUtilities.h"
-#include "ZmqLogger.h"
-#include "Settings.h"
-
-
 namespace openshot {
 
 	/// This enumeration designates the type of stream when encoding (video or audio)
 	enum StreamType {
-		VIDEO_STREAM,    ///< A video stream (used to determine which type of stream)
-		AUDIO_STREAM     ///< An audio stream (used to determine which type of stream)
+		VIDEO_STREAM,	///< A video stream (used to determine which type of stream)
+		AUDIO_STREAM	///< An audio stream (used to determine which type of stream)
 	};
 
 	/**
@@ -148,7 +116,6 @@ namespace openshot {
 	class FFmpegWriter : public WriterBase {
 	private:
 		std::string path;
-		int cache_size;
 		bool is_writing;
 		bool is_open;
 		int64_t video_timestamp;
@@ -157,9 +124,10 @@ namespace openshot {
 		bool prepare_streams;
 		bool write_header;
 		bool write_trailer;
+		bool allow_b_frames;
+		bool testing;
 
-		AVOutputFormat *fmt;
-		AVFormatContext *oc;
+		AVFormatContext* oc;
 		AVStream *audio_st, *video_st;
 		AVCodecContext *video_codec_ctx;
 		AVCodecContext *audio_codec_ctx;
@@ -168,9 +136,23 @@ namespace openshot {
 		uint8_t *audio_outbuf;
 		uint8_t *audio_encoder_buffer;
 
-		int num_of_rescalers;
-		int rescaler_position;
-		std::vector<SwsContext *> image_rescalers;
+#if USE_HW_ACCEL
+		// Hardware encoder ownership belongs to this export, never another writer.
+		bool hw_en_on = false;
+		bool hw_en_supported = false;
+		AVPixelFormat hw_en_av_pix_fmt = AV_PIX_FMT_NONE;
+		AVHWDeviceType hw_en_av_device_type = AV_HWDEVICE_TYPE_NONE;
+		AVBufferRef* hw_device_ctx = nullptr;
+		AVFrame* hw_frame = nullptr;
+#endif
+		AVFrame *persistent_src_frame = nullptr;
+		AVFrame *persistent_dst_frame = nullptr;
+		uint8_t *persistent_dst_buffer = nullptr;
+		int persistent_dst_size = 0;
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+		bool gpu_export_failed = false; ///< Encode remaining frames from CPU pixels
+		bool gpu_export_logged = false; ///< The GPU export path was reported once
+#endif
 
 		int audio_outbuf_size;
 		int audio_input_frame_size;
@@ -185,15 +167,6 @@ namespace openshot {
 		int original_channels;
 
 		std::shared_ptr<openshot::Frame> last_frame;
-		std::deque<std::shared_ptr<openshot::Frame> > spooled_audio_frames;
-		std::deque<std::shared_ptr<openshot::Frame> > spooled_video_frames;
-
-		std::deque<std::shared_ptr<openshot::Frame> > queued_audio_frames;
-		std::deque<std::shared_ptr<openshot::Frame> > queued_video_frames;
-
-		std::deque<std::shared_ptr<openshot::Frame> > processed_frames;
-		std::deque<std::shared_ptr<openshot::Frame> > deallocate_frames;
-
 		std::map<std::shared_ptr<openshot::Frame>, AVFrame *> av_frames;
 
 		/// Add an AVFrame to the cache
@@ -203,7 +176,7 @@ namespace openshot {
 		AVStream *add_audio_stream();
 
 		/// Add a video output stream
-		AVStream *add_video_stream();
+		AVStream *add_video_stream(AVStream* existing = nullptr);
 
 		/// Allocate an AVFrame object
 		AVFrame *allocate_avframe(PixelFormat pix_fmt, int width, int height, int *buffer_size, uint8_t *new_buffer);
@@ -223,11 +196,6 @@ namespace openshot {
 		/// initialize streams
 		void initialize_streams();
 
-		/// @brief Init a collection of software rescalers (thread safe)
-		/// @param source_width The source width of the image scalers (used to cache a bunch of scalers)
-		/// @param source_height The source height of the image scalers (used to cache a bunch of scalers)
-		void InitScalers(int source_width, int source_height);
-
 		/// open audio codec
 		void open_audio(AVFormatContext *oc, AVStream *st);
 
@@ -238,15 +206,16 @@ namespace openshot {
 		void process_video_packet(std::shared_ptr<openshot::Frame> frame);
 
 		/// write all queued frames' audio to the video file
-		void write_audio_packets(bool is_final);
+		void write_audio_packets(bool is_final, std::shared_ptr<openshot::Frame> frame);
 
 		/// write video frame
 		bool write_video_packet(std::shared_ptr<openshot::Frame> frame, AVFrame *frame_final);
 
 		/// write all queued frames
-		void write_queued_frames();
+		void write_frame(std::shared_ptr<Frame> frame);
 
 	public:
+        void WriteMeasuredFrame(ReaderBase* reader, int64_t number);
 
 		/// @brief Constructor for FFmpegWriter.
 		/// Throws an exception on failure to open path.
@@ -257,17 +226,59 @@ namespace openshot {
 		/// Close the writer
 		void Close();
 
-		/// Get the cache size (number of frames to queue before writing)
-		int GetCacheSize() { return cache_size; };
-
 		/// Determine if writer is open or closed
 		bool IsOpen() { return is_open; };
 
 		/// Determine if codec name is valid
 		static bool IsValidCodec(std::string codec_name);
 
+		/// @brief Describe an encoder's capabilities as JSON.
+		///
+		/// Includes the codec it writes ("codec", i.e. h264), whether it's hardware, lossless,
+		/// lossy, or intra-only, its quality options, and the sample rates, channel layouts, and
+		/// formats it accepts. Lists are null when the encoder accepts any value. Unknown encoders
+		/// return {"found": false}.
+		/// @param codec_name The encoder name (i.e. aac, libmp3lame, libx264)
+		static std::string GetEncoderInfo(std::string codec_name);
+
+		/// @brief Describe an output format as JSON (name, extensions, and default codecs).
+		///
+		/// The format is matched the same way the writer matches it: by file extension first,
+		/// and then by FFmpeg's short format name. Unknown formats return {"found": false}.
+		/// @param format_name A file extension or format name (i.e. mp4, mkv, webm, matroska)
+		static std::string GetFormatInfo(std::string format_name);
+
+		/// @brief List the file extensions the writer can export to, as a JSON array.
+		///
+		/// One entry per extension (i.e. mkv), with its format's name, long name, and default
+		/// codecs. Only extensions that select that format are listed, matching how the writer
+		/// picks a format from the file name.
+		static std::string GetFormats();
+
+		/// @brief List the available encoders as a JSON array.
+		/// @param media_type "audio" or "video"
+		/// @param format_name Only list encoders this format can store (optional)
+		static std::string GetEncoders(std::string media_type, std::string format_name = "");
+
+		/// @brief Determine if an output format can store a codec.
+		/// @returns 1 if it can, 0 if it can't, and -1 if FFmpeg doesn't know
+		/// @param format_name A file extension or format name (i.e. mp4, mkv, webm, matroska)
+		/// @param codec_name The encoder name (i.e. aac, libmp3lame, libx264)
+		static int IsCodecSupportedByFormat(std::string format_name, std::string codec_name);
+
 		/// Open writer
 		void Open();
+
+		/// @brief Check the current settings without writing a file, and return the result as JSON.
+		///
+		/// Call this instead of Open(), after the same options an export would set. It opens the
+		/// encoders (including hardware encoders) and writes the header to memory, so the format and
+		/// codecs reject anything they would reject during a real export. FFmpeg's messages are
+		/// returned instead of printed. The writer can't be used after this call.
+		///
+		/// Returns {"ok", "stage", "message", "log", "elapsed_ms"}, where stage is "video", "audio",
+		/// or "header" when the check fails.
+		std::string Test();
 
 		/// Output the ffmpeg info about this format, streams, and codecs (i.e. dump format)
 		void OutputStreamInfo();
@@ -275,9 +286,6 @@ namespace openshot {
 		/// @brief Prepare & initialize streams and open codecs. This method is called automatically
 		/// by the Open() method if this method has not yet been called.
 		void PrepareStreams();
-
-		/// Remove & deallocate all software scalers
-		void RemoveScalers();
 
 		/// @brief Set audio resample options
 		/// @param sample_rate The number of samples per second of the audio
@@ -305,10 +313,6 @@ namespace openshot {
 		///
 		/// \note This is an overloaded function.
 		void SetAudioOptions(std::string codec, int sample_rate, int bit_rate);
-
-		/// @brief Set the cache size
-		/// @param new_size The number of frames to queue before writing to the file
-		void SetCacheSize(int new_size) { cache_size = new_size; };
 
 		/// @brief Set video export options
 		/// @param has_video Does this file need a video stream
@@ -356,6 +360,14 @@ namespace openshot {
 		/// \note This is an overloaded function.
 		void WriteFrame(std::shared_ptr<openshot::Frame> frame);
 
+		/// @brief Add a frame at a specific output video frame number.
+		/// @param frame The openshot::Frame object to write
+		/// @param frame_number The 1-based output video frame number used for video PTS
+		///
+		/// \note Audio is still written sequentially. This overload is intended for
+		/// timestamped live video capture where missing frame numbers represent gaps.
+		void WriteFrameAt(std::shared_ptr<openshot::Frame> frame, int64_t frame_number);
+
 		/// @brief Write a block of frames from a reader
 		/// @param reader A openshot::ReaderBase object which will provide frames to be written
 		/// @param start The starting frame number of the reader
@@ -368,8 +380,15 @@ namespace openshot {
 		/// by the Close() method if this method has not yet been called.
 		void WriteTrailer();
 
+		/// @brief Add spherical (360°) video metadata to the video stream
+		/// @param projection The projection type (e.g., "equirectangular", "cubemap")
+		/// @param yaw_deg The yaw angle in degrees (horizontal orientation, default 0)
+		/// @param pitch_deg The pitch angle in degrees (vertical orientation, default 0)
+		/// @param roll_deg The roll angle in degrees (tilt orientation, default 0)
+		void AddSphericalMetadata(const std::string& projection="equirectangular", float yaw_deg=0.0f, float pitch_deg=0.0f, float roll_deg=0.0f);
+
 	};
 
-}
+} // namespace openshot
 
 #endif

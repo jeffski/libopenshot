@@ -6,50 +6,41 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "Mask.h"
+
 #include "Exceptions.h"
-#include "FFmpegReader.h"
-#ifdef USE_IMAGEMAGICK
-	#include "ImageReader.h"
-#endif
+
 #include "ReaderBase.h"
+#include <array>
+#include <omp.h>
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+#include "VulkanCompositor.h"
+#include "VulkanFrameImage.h"
+#include "Logger.h"
+#endif
 
 using namespace openshot;
 
 /// Blank constructor, useful when using Json to load the effect properties
-Mask::Mask() : reader(NULL), replace_image(false), needs_refresh(true) {
+Mask::Mask() : replace_image(false), fade_audio_hint(false) {
 	// Init effect properties
 	init_effect_details();
 }
 
 // Default constructor
 Mask::Mask(ReaderBase *mask_reader, Keyframe mask_brightness, Keyframe mask_contrast) :
-		reader(mask_reader), brightness(mask_brightness), contrast(mask_contrast), replace_image(false), needs_refresh(true)
+		brightness(mask_brightness), contrast(mask_contrast), replace_image(false), fade_audio_hint(false)
 {
 	// Init effect properties
 	init_effect_details();
+
+	// Keep ownership local by cloning externally-provided readers.
+	if (mask_reader)
+		MaskReader(CreateReaderFromJson(mask_reader->JsonValue()));
 }
 
 // Init effect settings
@@ -69,89 +60,135 @@ void Mask::init_effect_details()
 // This method is required for all derived classes of EffectBase, and returns a
 // modified openshot::Frame object
 std::shared_ptr<openshot::Frame> Mask::GetFrame(std::shared_ptr<openshot::Frame> frame, int64_t frame_number) {
-	// Get the mask image (from the mask reader)
+    // An absent reader/generated mask is a no-op, including on deferred frames.
+    if (!MaskReader() && MaskSourceId().empty()) return frame;
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+    if (VulkanRenderingEnabled()) {
+        try {
+            auto surface=frame->GetDeferredImage();
+            if (!surface && ParentClip() && frame->has_image_data) surface=UploadVulkanImage(*frame->GetImage());
+            std::shared_ptr<const FrameImage> mask;
+            if(surface) {
+                if(auto* source=ResolveMaskSourceEffect()) {
+                    mask=ResolveGeneratedMaskSurface(surface,frame_number);
+                    if(!mask) mask=SolidVulkanImage(surface->GetWidth(),surface->GetHeight(),Qt::black);
+                } else mask=ResolveReaderMaskSurface(surface->GetWidth(),surface->GetHeight(),frame_number);
+            }
+            if (surface && !mask) return frame;
+            if (surface && mask) {
+                const float factor=20.0f/std::max(0.5f,20.0f-float(contrast.GetValue(frame_number)));
+                frame->AddDeferredImage(MaskVulkanImage(surface,mask,factor,
+                    int(255*brightness.GetValue(frame_number)),mask_invert,replace_image));
+                return frame;
+            }
+        } catch (const std::exception& error) {
+            Logger::Instance()->Log(std::string("Vulkan mask CPU fallback: ")+error.what());
+        }
+    }
+#endif
+	// Get frame image first
 	std::shared_ptr<QImage> frame_image = frame->GetImage();
-
-	// Check if mask reader is open
-	#pragma omp critical (open_mask_reader)
-	{
-		if (reader && !reader->IsOpen())
-			reader->Open();
-	}
-
-	// No reader (bail on applying the mask)
-	if (!reader)
+	if (!frame_image || frame_image->isNull())
 		return frame;
 
-	// Get mask image (if missing or different size than frame image)
-	#pragma omp critical (open_mask_reader)
-	{
-		if (!original_mask || !reader->info.has_single_image || needs_refresh ||
-			(original_mask && original_mask->size() != frame_image->size())) {
+	// No reader (bail on applying the mask)
+	auto original_mask = ResolveMaskImage(frame_image, frame_number);
+	if (!original_mask || original_mask->isNull())
+		return frame;
 
-			// Only get mask if needed
-			auto mask_without_sizing = std::make_shared<QImage>(
-				*reader->GetFrame(frame_number)->GetImage());
+	// Grab raw pointers and dimensions one time
+	unsigned char* pixels      = reinterpret_cast<unsigned char*>(frame_image->bits());
+	unsigned char* mask_pixels = reinterpret_cast<unsigned char*>(original_mask->bits());
+	const int num_pixels        = original_mask->width() * original_mask->height();
 
-			// Resize mask image to match frame size
-			original_mask = std::make_shared<QImage>(
-				mask_without_sizing->scaled(
-					frame_image->width(), frame_image->height(),
-					Qt::IgnoreAspectRatio, Qt::SmoothTransformation));
-		}
+	// Evaluate brightness and contrast keyframes just once
+	double contrast_value   = contrast.GetValue(frame_number);
+	double brightness_value = brightness.GetValue(frame_number);
+
+	int brightness_adj = static_cast<int>(255 * brightness_value);
+	float contrast_factor = 20.0f / std::max(0.5f, 20.0f - static_cast<float>(contrast_value));
+	const bool output_mask = replace_image;
+	const auto clamp_u8 = [](int value) -> unsigned char {
+		if (value < 0) return 0;
+		if (value > 255) return 255;
+		return static_cast<unsigned char>(value);
+	};
+	// Precompute gray->adjusted-gray mapping for this frame's brightness/contrast.
+	std::array<unsigned char, 256> adjusted_gray{};
+	for (int gray = 0; gray < 256; ++gray) {
+		const int adjusted = static_cast<int>(contrast_factor * ((gray + brightness_adj) - 128) + 128);
+		adjusted_gray[gray] = clamp_u8(adjusted);
 	}
-
-	// Refresh no longer needed
-	needs_refresh = false;
-
-	// Get pixel arrays
-	unsigned char *pixels = (unsigned char *) frame_image->bits();
-	unsigned char *mask_pixels = (unsigned char *) original_mask->bits();
-
-	double contrast_value = (contrast.GetValue(frame_number));
-	double brightness_value = (brightness.GetValue(frame_number));
-
-	// Loop through mask pixels, and apply average gray value to frame alpha channel
-	for (int pixel = 0, byte_index=0; pixel < original_mask->width() * original_mask->height(); pixel++, byte_index+=4)
-	{
-		// Get the RGB values from the pixel
-		int R = mask_pixels[byte_index];
-		int G = mask_pixels[byte_index + 1];
-		int B = mask_pixels[byte_index + 2];
-		int A = mask_pixels[byte_index + 3];
-
-		// Get the average luminosity
-		int gray_value = qGray(R, G, B);
-
-		// Adjust the contrast
-		float factor = (259 * (contrast_value + 255)) / (255 * (259 - contrast_value));
-		gray_value = constrain((factor * (gray_value - 128)) + 128);
-
-		// Adjust the brightness
-		gray_value += (255 * brightness_value);
-
-		// Constrain the value from 0 to 255
-		gray_value = constrain(gray_value);
-
-		// Calculate the % change in alpha
-		float alpha_percent = float(constrain(A - gray_value)) / 255.0;
-
-		// Set the alpha channel to the gray value
-		if (replace_image) {
-			// Replace frame pixels with gray value (including alpha channel)
-			pixels[byte_index + 0] = gray_value;
-			pixels[byte_index + 1] = gray_value;
-			pixels[byte_index + 2] = gray_value;
-			pixels[byte_index + 3] = gray_value;
-		} else {
-			// Mulitply new alpha value with all the colors (since we are using a premultiplied
-			// alpha format)
-			pixels[byte_index + 0] *= alpha_percent;
-			pixels[byte_index + 1] *= alpha_percent;
-			pixels[byte_index + 2] *= alpha_percent;
-			pixels[byte_index + 3] *= alpha_percent;
+	// 8-bit multiply lookup for premultiplied alpha channel scaling.
+	static const std::array<std::array<unsigned char, 256>, 256> mul_lut = [] {
+		std::array<std::array<unsigned char, 256>, 256> lut{};
+		for (int alpha = 0; alpha < 256; ++alpha) {
+			for (int value = 0; value < 256; ++value) {
+				lut[alpha][value] = static_cast<unsigned char>((value * alpha) / 255);
+			}
 		}
+		return lut;
+	}();
 
+	// Separate loops keep the hot path branch-free per pixel.
+	if (output_mask) {
+		#pragma omp parallel for if(num_pixels >= 16384) schedule(static)
+		for (int i = 0; i < num_pixels; ++i) {
+			const int idx = i * 4;
+			const int R = mask_pixels[idx + 0];
+			const int G = mask_pixels[idx + 1];
+			const int B = mask_pixels[idx + 2];
+			const int A = mask_pixels[idx + 3];
+
+			const int gray = ((R * 11) + (G * 16) + (B * 5)) >> 5;
+			const int diff = A - adjusted_gray[gray];
+			const unsigned char new_val = clamp_u8(diff);
+			pixels[idx + 0] = new_val;
+			pixels[idx + 1] = new_val;
+			pixels[idx + 2] = new_val;
+			pixels[idx + 3] = new_val;
+		}
+	} else if (mask_invert) {
+		#pragma omp parallel for if(num_pixels >= 16384) schedule(static)
+		for (int i = 0; i < num_pixels; ++i) {
+			const int idx = i * 4;
+			const int R = mask_pixels[idx + 0];
+			const int G = mask_pixels[idx + 1];
+			const int B = mask_pixels[idx + 2];
+			const int A = mask_pixels[idx + 3];
+
+			const int gray = ((R * 11) + (G * 16) + (B * 5)) >> 5;
+			int alpha = A - adjusted_gray[gray];
+			if (alpha < 0) alpha = 0;
+			else if (alpha > 255) alpha = 255;
+			alpha = 255 - alpha;
+
+			// Premultiplied RGBA → multiply each channel by alpha
+			pixels[idx + 0] = mul_lut[alpha][pixels[idx + 0]];
+			pixels[idx + 1] = mul_lut[alpha][pixels[idx + 1]];
+			pixels[idx + 2] = mul_lut[alpha][pixels[idx + 2]];
+			pixels[idx + 3] = mul_lut[alpha][pixels[idx + 3]];
+		}
+	} else {
+		#pragma omp parallel for if(num_pixels >= 16384) schedule(static)
+		for (int i = 0; i < num_pixels; ++i) {
+			const int idx = i * 4;
+			const int R = mask_pixels[idx + 0];
+			const int G = mask_pixels[idx + 1];
+			const int B = mask_pixels[idx + 2];
+			const int A = mask_pixels[idx + 3];
+
+			const int gray = ((R * 11) + (G * 16) + (B * 5)) >> 5;
+			int alpha = A - adjusted_gray[gray];
+			if (alpha < 0) alpha = 0;
+			else if (alpha > 255) alpha = 255;
+
+			// Premultiplied RGBA → multiply each channel by alpha
+			pixels[idx + 0] = mul_lut[alpha][pixels[idx + 0]];
+			pixels[idx + 1] = mul_lut[alpha][pixels[idx + 1]];
+			pixels[idx + 2] = mul_lut[alpha][pixels[idx + 2]];
+			pixels[idx + 3] = mul_lut[alpha][pixels[idx + 3]];
+		}
 	}
 
 	// return the modified frame
@@ -173,11 +210,8 @@ Json::Value Mask::JsonValue() const {
 	root["type"] = info.class_name;
 	root["brightness"] = brightness.JsonValue();
 	root["contrast"] = contrast.JsonValue();
-	if (reader)
-		root["reader"] = reader->JsonValue();
-	else
-		root["reader"] = Json::objectValue;
 	root["replace_image"] = replace_image;
+	root["fade_audio_hint"] = fade_audio_hint;
 
 	// return JsonValue
 	return root;
@@ -202,68 +236,23 @@ void Mask::SetJson(const std::string value) {
 
 // Load Json::Value into this object
 void Mask::SetJsonValue(const Json::Value root) {
+	Json::Value normalized_root = root;
+	// Legacy compatibility: keep accepting "reader" on Mask effects.
+	if (!normalized_root["reader"].isNull() && normalized_root["mask_reader"].isNull())
+		normalized_root["mask_reader"] = normalized_root["reader"];
 
 	// Set parent data
-	EffectBase::SetJsonValue(root);
+	EffectBase::SetJsonValue(normalized_root);
 
 	// Set data from Json (if key is found)
-	if (!root["replace_image"].isNull())
-		replace_image = root["replace_image"].asBool();
-	if (!root["brightness"].isNull())
-		brightness.SetJsonValue(root["brightness"]);
-	if (!root["contrast"].isNull())
-		contrast.SetJsonValue(root["contrast"]);
-	if (!root["reader"].isNull()) // does Json contain a reader?
-	{
-		#pragma omp critical (open_mask_reader)
-		{
-			// This reader has changed, so refresh cached assets
-			needs_refresh = true;
-
-			if (!root["reader"]["type"].isNull()) // does the reader Json contain a 'type'?
-			{
-				// Close previous reader (if any)
-				if (reader) {
-					// Close and delete existing reader (if any)
-					reader->Close();
-					delete reader;
-					reader = NULL;
-				}
-
-				// Create new reader (and load properties)
-				std::string type = root["reader"]["type"].asString();
-
-				if (type == "FFmpegReader") {
-
-					// Create new reader
-					reader = new FFmpegReader(root["reader"]["path"].asString());
-					reader->SetJsonValue(root["reader"]);
-
-	#ifdef USE_IMAGEMAGICK
-				} else if (type == "ImageReader") {
-
-					// Create new reader
-					reader = new ImageReader(root["reader"]["path"].asString());
-					reader->SetJsonValue(root["reader"]);
-	#endif
-
-				} else if (type == "QtImageReader") {
-
-					// Create new reader
-					reader = new QtImageReader(root["reader"]["path"].asString());
-					reader->SetJsonValue(root["reader"]);
-
-				} else if (type == "ChunkReader") {
-
-					// Create new reader
-					reader = new ChunkReader(root["reader"]["path"].asString(), (ChunkVersion) root["reader"]["chunk_version"].asInt());
-					reader->SetJsonValue(root["reader"]);
-
-				}
-			}
-
-		}
-	}
+	if (!normalized_root["replace_image"].isNull())
+		replace_image = normalized_root["replace_image"].asBool();
+	if (!normalized_root["fade_audio_hint"].isNull())
+		fade_audio_hint = normalized_root["fade_audio_hint"].asBool();
+	if (!normalized_root["brightness"].isNull())
+		brightness.SetJsonValue(normalized_root["brightness"]);
+	if (!normalized_root["contrast"].isNull())
+		contrast.SetJsonValue(normalized_root["contrast"]);
 
 }
 
@@ -271,31 +260,31 @@ void Mask::SetJsonValue(const Json::Value root) {
 std::string Mask::PropertiesJSON(int64_t requested_frame) const {
 
 	// Generate JSON properties list
-	Json::Value root;
-	root["id"] = add_property_json("ID", 0.0, "string", Id(), NULL, -1, -1, true, requested_frame);
-	root["position"] = add_property_json("Position", Position(), "float", "", NULL, 0, 30 * 60 * 60 * 48, false, requested_frame);
-	root["layer"] = add_property_json("Track", Layer(), "int", "", NULL, 0, 20, false, requested_frame);
-	root["start"] = add_property_json("Start", Start(), "float", "", NULL, 0, 30 * 60 * 60 * 48, false, requested_frame);
-	root["end"] = add_property_json("End", End(), "float", "", NULL, 0, 30 * 60 * 60 * 48, false, requested_frame);
-	root["duration"] = add_property_json("Duration", Duration(), "float", "", NULL, 0, 30 * 60 * 60 * 48, true, requested_frame);
-	root["replace_image"] = add_property_json("Replace Image", replace_image, "int", "", NULL, 0, 1, false, requested_frame);
+	Json::Value root = BasePropertiesJSON(requested_frame);
 
 	// Add replace_image choices (dropdown style)
+	root["replace_image"] = add_property_json("Replace Image", replace_image, "int", "", NULL, 0, 1, false, requested_frame);
 	root["replace_image"]["choices"].append(add_property_choice_json("Yes", true, replace_image));
 	root["replace_image"]["choices"].append(add_property_choice_json("No", false, replace_image));
+
+	root["fade_audio_hint"] = add_property_json("Fade Audio", fade_audio_hint, "int", "", NULL, 0, 1, false, requested_frame);
+	root["fade_audio_hint"]["choices"].append(add_property_choice_json("Yes", true, fade_audio_hint));
+	root["fade_audio_hint"]["choices"].append(add_property_choice_json("No", false, fade_audio_hint));
 
 	// Keyframes
 	root["brightness"] = add_property_json("Brightness", brightness.GetValue(requested_frame), "float", "", &brightness, -1.0, 1.0, false, requested_frame);
 	root["contrast"] = add_property_json("Contrast", contrast.GetValue(requested_frame), "float", "", &contrast, 0, 20, false, requested_frame);
 
-	if (reader)
-		root["reader"] = add_property_json("Source", 0.0, "reader", reader->Json(), NULL, 0, 1, false, requested_frame);
-	else
-		root["reader"] = add_property_json("Source", 0.0, "reader", "{}", NULL, 0, 1, false, requested_frame);
-
-	// Set the parent effect which properties this effect will inherit
-	root["parent_effect_id"] = add_property_json("Parent", 0.0, "string", info.parent_effect_id, NULL, -1, -1, false, requested_frame);
-
 	// Return formatted string
 	return root.toStyledString();
+}
+
+void Mask::Reader(ReaderBase *new_reader) {
+	if (!new_reader) {
+		MaskReader(NULL);
+		return;
+	}
+
+	// Keep ownership local by cloning externally-provided readers.
+	MaskReader(CreateReaderFromJson(new_reader->JsonValue()));
 }

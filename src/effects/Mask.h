@@ -6,27 +6,9 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_MASK_EFFECT_H
 #define OPENSHOT_MASK_EFFECT_H
@@ -54,15 +36,16 @@ namespace openshot
 	class Mask : public EffectBase
 	{
 	private:
-		ReaderBase *reader;
-		std::shared_ptr<QImage> original_mask;
-		bool needs_refresh;
-
 		/// Init effect settings
 		void init_effect_details();
 
+	protected:
+		bool HandlesMaskInternally() const override { return true; }
+
 	public:
+        bool RendersOnVulkan() const override { return true; }
 		bool replace_image;		///< Replace the frame image with a grayscale image representing the mask. Great for debugging a mask.
+		bool fade_audio_hint;	///< Timeline-only hint requesting equal-power audio crossfade for overlapping clips when this Mask is used as a global transition.
 		Keyframe brightness;	///< Brightness keyframe to control the wipe / mask effect. A constant value here will prevent animation.
 		Keyframe contrast;		///< Contrast keyframe to control the hardness of the wipe effect / mask.
 
@@ -108,10 +91,10 @@ namespace openshot
 		std::string PropertiesJSON(int64_t requested_frame) const override;
 
 		/// Get the reader object of the mask grayscale image
-		ReaderBase* Reader() { return reader; };
+		ReaderBase* Reader() { return MaskReader(); };
 
 		/// Set a new reader to be used by the mask effect (grayscale image)
-		void Reader(ReaderBase *new_reader) { reader = new_reader; };
+		void Reader(ReaderBase *new_reader);
 	};
 
 }

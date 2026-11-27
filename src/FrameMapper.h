@@ -6,36 +6,19 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_FRAMEMAPPER_H
 #define OPENSHOT_FRAMEMAPPER_H
 
 #include <assert.h>
 #include <iostream>
-#include <cmath>
 #include <vector>
 #include <memory>
+
+#include "AudioResampler.h"
 #include "CacheMemory.h"
 #include "ReaderBase.h"
 #include "Frame.h"
@@ -73,14 +56,6 @@ namespace openshot
 	{
 		int64_t Frame;
 		bool isOdd;
-
-		Field() : Frame(0), isOdd(true) { };
-
-		Field(int64_t frame, bool isodd)
-		{
-			Frame = frame;
-			isOdd = isodd;
-		}
 	};
 
 	/**
@@ -96,6 +71,86 @@ namespace openshot
 
 		int64_t frame_end;
 		int sample_end;
+
+		/// Extend SampleRange on either side
+		void Extend(int64_t samples, openshot::Fraction fps, int sample_rate, int channels, bool right_side) {
+			int remaining_samples = samples;
+			while (remaining_samples > 0) {
+				if (right_side) {
+					// Extend range to the right
+					int samples_per_frame = Frame::GetSamplesPerFrame(frame_end, fps, sample_rate, channels);
+					if (remaining_samples + sample_end < samples_per_frame) {
+						sample_end += remaining_samples;
+						remaining_samples = 0;
+					} else {
+						frame_end++;
+						remaining_samples -= (samples_per_frame - sample_end);
+						sample_end = 0;
+					}
+				} else {
+					// Extend range to the left
+					if (sample_start - remaining_samples >= 0) {
+						sample_start -= remaining_samples;
+						remaining_samples = 0;
+					} else {
+						frame_start--;
+						remaining_samples -= (sample_start + 1);
+						sample_start = Frame::GetSamplesPerFrame(frame_start, fps, sample_rate, channels) - 1;
+					}
+				}
+			}
+
+			// Increase total
+			total += samples;
+		}
+
+		/// Shrink SampleRange on either side
+		void Shrink(int64_t samples, openshot::Fraction fps, int sample_rate, int channels, bool right_side) {
+			int remaining_samples = samples;
+			while (remaining_samples > 0) {
+				if (right_side) {
+					// Shrink range on the right
+					if (sample_end - remaining_samples >= 0) {
+						sample_end -= remaining_samples;
+						remaining_samples = 0;
+					} else {
+						frame_end--;
+						int samples_per_frame = Frame::GetSamplesPerFrame(frame_end, fps, sample_rate, channels);
+						remaining_samples -= (sample_end + 1);
+						sample_end = samples_per_frame - 1;
+					}
+				} else {
+					// Shrink range on the left
+					int samples_per_frame = Frame::GetSamplesPerFrame(frame_start, fps, sample_rate, channels);
+					if (sample_start + remaining_samples < samples_per_frame) {
+						sample_start += remaining_samples;
+						remaining_samples = 0;
+					} else {
+						frame_start++;
+						remaining_samples -= (samples_per_frame - sample_start);
+						sample_start = 0;
+					}
+				}
+			}
+
+			// Reduce total
+			total -= samples;
+		}
+
+		void Shift(int64_t samples, openshot::Fraction fps, int sample_rate, int channels, bool right_side) {
+			// Extend each side of the range (to SHIFT the range) by adding (or subtracting) from both sides
+			// For example:   [	range	 ]
+			// For example:	   [	range	 ]
+			if (right_side) {
+				// SHIFT both sides to the right
+				Extend(samples, fps, sample_rate, channels, true);
+				Shrink(samples, fps, sample_rate, channels, false);
+			} else {
+				// SHIFT both sides to the left
+				Extend(samples, fps, sample_rate, channels, false);
+				Shrink(samples, fps, sample_rate, channels, true);
+			}
+		}
 
 		int total;
 	};
@@ -123,7 +178,7 @@ namespace openshot
 	 *
 	 * The <b>following graphic</b> displays a how frame rates are mapped, and how time remapping affects the order
 	 * of frames returned from the FrameMapper.
-	 * \image html /doc/images/FrameMapper.png
+	 * \image html FrameMapper.png
 	 *
 	 * Please see the following <b>Example Code</b>:
 	 * \code
@@ -136,6 +191,9 @@ namespace openshot
 	 * \endcode
 	 */
 	class FrameMapper : public ReaderBase {
+        friend class PitchShift;
+        friend class Clip;
+
 	private:
 		bool field_toggle;		// Internal odd / even toggle (used when building the mapping)
 		Fraction original;		// The original frame rate
@@ -145,12 +203,27 @@ namespace openshot
 		CacheMemory final_cache; 		// Cache of actual Frame objects
 		bool is_dirty; 			// When this is true, the next call to GetFrame will re-init the mapping
 		float parent_position;  // Position of parent clip (which is used to generate the audio mapping)
-		float parent_start;     // Start of parent clip (which is used to generate the audio mapping)
+		float parent_start;		// Start of parent clip (which is used to generate the audio mapping)
+		int64_t previous_frame; // Used during resampling, to determine when a large gap is detected
 		SWRCONTEXT *avr;	// Audio resampling context object
+
+		// Time curve / direction
+		std::recursive_mutex directionMutex;
+		bool have_hint = false;
+		bool hint_increasing = true;
+		bool last_is_increasing = true;
+		bool last_dir_initialized = false;
+
+		// Audio resampler (if resampling audio)
+		openshot::AudioResampler *resampler;
 
 		// Internal methods used by init
 		void AddField(int64_t frame);
+        void AddField(int64_t frame, bool isOdd);
 		void AddField(Field field);
+
+		// Clear both the fields & frames lists
+		void Clear();
 
 		// Get Frame or Generate Blank Frame
 		std::shared_ptr<Frame> GetOrCreateFrame(int64_t number);
@@ -210,8 +283,11 @@ namespace openshot
 		/// Open the internal reader
 		void Open() override;
 
+		/// Set time-curve informed direction hint (from Clip class) for the next call to GetFrame
+		void SetDirectionHint(const bool increasing);
+
 		/// Print all of the original frames and which new frames they map to
-		void PrintMapping();
+		void PrintMapping(std::ostream* out=&std::cout);
 
 		/// Get the current reader
 		ReaderBase* Reader();

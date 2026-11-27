@@ -6,27 +6,9 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_BLUR_EFFECT_H
 #define OPENSHOT_BLUR_EFFECT_H
@@ -42,6 +24,10 @@
 
 namespace openshot
 {
+	enum BlurMaskMode {
+		BLUR_MASK_POST_BLEND = 0,
+		BLUR_MASK_DRIVE_AMOUNT = 1
+	};
 
 	/**
 	 * @brief This class adjusts the blur of an image, and can be animated
@@ -53,6 +39,10 @@ namespace openshot
 	 */
 	class Blur : public EffectBase
 	{
+	protected:
+		bool RendersOnVulkan() const override { return true; }
+		bool MaskDrivesAmount(int64_t frame_number) const override { return UseCustomMaskBlend(frame_number); }
+
 	private:
 		/// Init effect settings
 		void init_effect_details();
@@ -61,12 +51,21 @@ namespace openshot
 		void boxBlurH(unsigned char *scl, unsigned char *tcl, int w, int h, int r);
 		void boxBlurT(unsigned char *scl, unsigned char *tcl, int w, int h, int r);
 
+	protected:
+		bool UseCustomMaskBlend(int64_t frame_number) const override;
+		void ApplyCustomMaskBlend(std::shared_ptr<QImage> original_image, std::shared_ptr<QImage> effected_image,
+							  std::shared_ptr<QImage> mask_image, int64_t frame_number) const override;
 
 	public:
 		Keyframe horizontal_radius;	///< Horizontal blur radius keyframe. The size of the horizontal blur operation in pixels.
 		Keyframe vertical_radius;	///< Vertical blur radius keyframe. The size of the vertical blur operation in pixels.
 		Keyframe sigma;				///< Sigma keyframe. The amount of spread in the blur operation. Should be larger than radius.
 		Keyframe iterations;		///< Iterations keyframe. The # of blur iterations per pixel. 3 iterations = Gaussian.
+		Keyframe left;			///< Size of left margin
+		Keyframe top;			///< Size of top margin
+		Keyframe right;			///< Size of right margin
+		Keyframe bottom;		///< Size of bottom margin
+		int mask_mode;			///< How to apply common masks to blur (post-blend or drive-amount).
 
 		/// Blank constructor, useful when using Json to load the effect properties
 		Blur();
@@ -79,6 +78,19 @@ namespace openshot
 		/// @param new_sigma The curve to adjust the sigma amount (the size of the blur brush (between 0 and 100), float values accepted)
 		/// @param new_iterations The curve to adjust the # of iterations (between 1 and 100)
 		Blur(Keyframe new_horizontal_radius, Keyframe new_vertical_radius, Keyframe new_sigma, Keyframe new_iterations);
+
+		/// Default constructor, which takes blur curves and an affected area.
+		///
+		/// @param new_horizontal_radius The curve to adjust the horizontal blur radius (between 0 and 100, rounded to int)
+		/// @param new_vertical_radius The curve to adjust the vertical blur radius (between 0 and 100, rounded to int)
+		/// @param new_sigma The curve to adjust the sigma amount (the size of the blur brush (between 0 and 100), float values accepted)
+		/// @param new_iterations The curve to adjust the # of iterations (between 1 and 100)
+		/// @param new_left The curve to adjust the left margin size (between 0 and 1)
+		/// @param new_top The curve to adjust the top margin size (between 0 and 1)
+		/// @param new_right The curve to adjust the right margin size (between 0 and 1)
+		/// @param new_bottom The curve to adjust the bottom margin size (between 0 and 1)
+		Blur(Keyframe new_horizontal_radius, Keyframe new_vertical_radius, Keyframe new_sigma, Keyframe new_iterations,
+			 Keyframe new_left, Keyframe new_top, Keyframe new_right, Keyframe new_bottom);
 
 		/// @brief This method is required for all derived classes of ClipBase, and returns a
 		/// new openshot::Frame object. All Clip keyframes and effects are resolved into

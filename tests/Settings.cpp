@@ -6,40 +6,33 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
-#include <catch2/catch.hpp>
+#include "openshot_catch.h"
 
+#include <algorithm>
+#include "OpenMPUtilities.h"
 #include "Settings.h"
+#include <omp.h>
+
 
 using namespace openshot;
 
 TEST_CASE( "Constructor", "[libopenshot][settings]" )
 {
+	int cpu_count = std::max(2, omp_get_num_procs());
+
 	// Create an empty color
 	Settings *s = Settings::Instance();
 
-	CHECK(s->OMP_THREADS == 12);
+	CHECK(s->OMP_THREADS == cpu_count);
+	CHECK(s->FF_THREADS == cpu_count);
+	CHECK(s->DefaultOMPThreads() == cpu_count);
+	CHECK(s->DefaultFFThreads() == cpu_count);
+	CHECK(s->EffectiveOMPThreads() == cpu_count);
+	CHECK(omp_get_max_threads() == cpu_count);
 	CHECK_FALSE(s->HIGH_QUALITY_SCALING);
 }
 
@@ -47,14 +40,55 @@ TEST_CASE( "Change settings", "[libopenshot][settings]" )
 {
 	// Create an empty color
 	Settings *s = Settings::Instance();
-	s->OMP_THREADS = 8;
+	int original_runtime_threads = omp_get_max_threads();
+	int original_omp_threads = s->OMP_THREADS;
+	int original_ff_threads = s->FF_THREADS;
+	const int requested_omp_threads = std::min(13, s->MaxAllowedThreads());
+	s->OMP_THREADS = requested_omp_threads;
+	s->FF_THREADS = 12;
 	s->HIGH_QUALITY_SCALING = true;
+	Settings::Instance();
 
-	CHECK(s->OMP_THREADS == 8);
+	CHECK(s->OMP_THREADS == requested_omp_threads);
+	CHECK(s->FF_THREADS == 12);
+	CHECK(s->EffectiveOMPThreads() == requested_omp_threads);
 	CHECK(s->HIGH_QUALITY_SCALING == true);
+	CHECK(omp_get_max_threads() == requested_omp_threads);
 
-	CHECK(Settings::Instance()->OMP_THREADS == 8);
+	CHECK(Settings::Instance()->OMP_THREADS == requested_omp_threads);
+	CHECK(Settings::Instance()->FF_THREADS == 12);
+	CHECK(Settings::Instance()->EffectiveOMPThreads() == requested_omp_threads);
 	CHECK(Settings::Instance()->HIGH_QUALITY_SCALING == true);
+
+	// Restore prior OpenMP runtime state for later tests.
+	s->OMP_THREADS = original_omp_threads;
+	s->FF_THREADS = original_ff_threads;
+	Settings::Instance();
+	omp_set_num_threads(original_runtime_threads);
+}
+
+TEST_CASE( "Clamp settings to machine limits", "[libopenshot][settings]" )
+{
+	Settings *s = Settings::Instance();
+	const int original_omp_threads = s->OMP_THREADS;
+	const int original_ff_threads = s->FF_THREADS;
+	const int original_runtime_threads = omp_get_max_threads();
+	const int max_threads = s->MaxAllowedThreads();
+
+	s->OMP_THREADS = max_threads + 50;
+	s->FF_THREADS = max_threads + 50;
+	Settings::Instance();
+
+	CHECK(s->EffectiveOMPThreads() == max_threads);
+	CHECK(OPEN_MP_NUM_PROCESSORS == max_threads);
+	CHECK(FF_VIDEO_NUM_PROCESSORS == max_threads);
+	CHECK(FF_AUDIO_NUM_PROCESSORS == max_threads);
+	CHECK(omp_get_max_threads() == max_threads);
+
+	s->OMP_THREADS = original_omp_threads;
+	s->FF_THREADS = original_ff_threads;
+	Settings::Instance();
+	omp_set_num_threads(original_runtime_threads);
 }
 
 TEST_CASE( "Debug logging", "[libopenshot][settings][environment]")

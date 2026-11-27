@@ -7,49 +7,35 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "PlayerPrivate.h"
 #include "Exceptions.h"
 
+#include <queue>
 #include <thread>    // for std::this_thread::sleep_for
-#include <chrono>    // for std::chrono milliseconds, high_resolution_clock
+#include <chrono>    // for std::chrono microseconds, high_resolution_clock
 
 namespace openshot
 {
+    int close_to_sync = 5;
     // Constructor
     PlayerPrivate::PlayerPrivate(openshot::RendererBase *rb)
-    : renderer(rb), Thread("player"), video_position(1), audio_position(0)
-    , audioPlayback(new openshot::AudioPlaybackThread())
-    , videoPlayback(new openshot::VideoPlaybackThread(rb))
-    , videoCache(new openshot::VideoCacheThread())
-    , speed(1), reader(NULL), last_video_position(1)
-    { }
+    : Thread("player"), playback_frames(0), video_position(1), audio_position(0),
+      reader(nullptr), speed(1), last_speed(1), renderer(rb),
+      last_video_position(1), max_sleep_ms(125000), is_dirty(true)
+    {
+        videoCache = new openshot::VideoCacheThread();
+        audioPlayback = new openshot::AudioPlaybackThread(videoCache);
+        videoPlayback = new openshot::VideoPlaybackThread(rb);
+    }
 
     // Destructor
     PlayerPrivate::~PlayerPrivate()
     {
-        stopPlayback(1000);
+        stopPlayback();
         delete audioPlayback;
         delete videoCache;
         delete videoPlayback;
@@ -64,121 +50,171 @@ namespace openshot
 
         // Start the threads
         if (reader->info.has_audio)
-            audioPlayback->startThread(8);
+            audioPlayback->startThread(Priority::high);
         if (reader->info.has_video) {
-            videoCache->startThread(2);
-            videoPlayback->startThread(4);
+            videoCache->startThread(Priority::high);
+            videoPlayback->startThread(Priority::high);
         }
 
         using std::chrono::duration_cast;
 
-        // Types for storing time durations in whole and fractional milliseconds
-        using ms = std::chrono::milliseconds;
-        using double_ms = std::chrono::duration<double, ms::period>;
+        // Types for storing time durations in whole and fractional microseconds
+        using micro_sec = std::chrono::microseconds;
+        using double_micro_sec = std::chrono::duration<double, micro_sec::period>;
 
-        // Calculate on-screen time for a single frame in milliseconds
-        const auto frame_duration = double_ms(1000.0 / reader->info.fps.ToDouble());
+        // Init start_time of playback
+        std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds> start_time;
+        start_time = std::chrono::time_point_cast<micro_sec>(std::chrono::system_clock::now()); ///< timestamp playback starts
 
         while (!threadShouldExit()) {
-            // Get the start time (to track how long a frame takes to render)
-            const auto time1 = std::chrono::high_resolution_clock::now();
+            // Calculate on-screen time for a single frame
+            int frame_speed = std::max(abs(speed), 1);
+            const auto frame_duration = double_micro_sec(1000000.0 / (reader->info.fps.ToDouble() * frame_speed));
+            const auto max_sleep = frame_duration * 4; ///< Don't sleep longer than X times a frame duration
 
-            // Get the current video frame (if it's different)
-            frame = getFrame();
+            // Pausing Code (which re-syncs audio/video times)
+            // - If speed is zero or speed changes
+            // - If pre-roll is not ready (This should allow scrubbing of the timeline without waiting on pre-roll)
+            bool wait_paused_hold = (speed == 0 && video_position == last_video_position);
+            bool wait_speed_change = (speed != 0 && last_speed != speed);
+            bool cache_ready = videoCache->isReady();
+            bool wait_preroll = (speed != 0 && !is_dirty && !cache_ready);
+            bool should_wait = (wait_paused_hold || wait_speed_change || wait_preroll);
 
-            // Experimental Pausing Code (if frame has not changed)
-            if ((speed == 0 && video_position == last_video_position)
-                || (video_position > reader->info.video_length)
-               ) {
-                speed = 0;
-                std::this_thread::sleep_for(frame_duration);
+            if (should_wait)
+            {
+                // Sleep for a fraction of frame duration
+                std::this_thread::sleep_for(frame_duration / 4);
+
+                // Reset current playback start time
+                start_time = std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::system_clock::now());
+                playback_frames = 0;
+                last_speed = speed;
+
+                // Seek audio thread (since audio is also paused)
+                audioPlayback->Seek(video_position);
+                videoCache->AcknowledgeAudioCacheMiss();
+
                 continue;
             }
 
+            // Get the current video frame
+            const uint64_t frame_seek_generation = seek_generation.load();
+            auto frame_to_render = getFrame();
+            // A seek during decoding invalidates the old frame. Do not hand
+            // that frame to the renderer or overwrite the new playhead.
+            if (seek_generation.load() != frame_seek_generation)
+                continue;
+            const int64_t rendered_position = video_position.load();
+
             // Set the video frame on the video thread and render frame
-            videoPlayback->frame = frame;
+            videoPlayback->SetFrame(std::move(frame_to_render));
+            videoPlayback->rendered.reset();
             videoPlayback->render.signal();
+            // Keep decode/position advancement aligned with actual preview updates.
+            // This avoids occasional "silent advance then jump" behavior when
+            // preroll transitions and rendering are briefly out-of-sync.
+            const int render_wait_ms = std::max(
+                1,
+                static_cast<int>(frame_duration.count() / 1000.0 * 2.0)
+            );
+            videoPlayback->rendered.wait(render_wait_ms);
 
             // Keep track of the last displayed frame
-            last_video_position = video_position;
-
-            // How many frames ahead or behind is the video thread?
-            int64_t video_frame_diff = 0;
-            if (reader->info.has_audio && reader->info.has_video) {
-                if (speed != 1)
-                    // Set audio frame again (since we are not in normal speed, and not paused)
-                    audioPlayback->Seek(video_position);
-
-                // Only calculate this if a reader contains both an audio and video thread
-                audio_position = audioPlayback->getCurrentFramePosition();
-                video_frame_diff = video_position - audio_position;
+            {
+                std::lock_guard<std::mutex> lock(frame_mutex);
+                if (seek_generation.load() == frame_seek_generation)
+                    last_video_position = rendered_position;
             }
+            last_speed = speed;
 
-            // Get the end time (to track how long a frame takes to render)
-            const auto time2 = std::chrono::high_resolution_clock::now();
+            // Calculate the diff between 'now' and the predicted frame end time
+            const auto current_time = std::chrono::system_clock::now();
+            const auto remaining_time = double_micro_sec(start_time +
+                    (frame_duration * playback_frames) - current_time);
 
-            // Determine how many milliseconds it took to render the frame
-            const auto render_time = double_ms(time2 - time1);
-
-            // Calculate the amount of time to sleep (by subtracting the render time)
-            auto sleep_time = duration_cast<ms>(frame_duration - render_time);
-
-            // Debug
-            ZmqLogger::Instance()->AppendDebugMethod("PlayerPrivate::run (determine sleep)", "video_frame_diff", video_frame_diff, "video_position", video_position, "audio_position", audio_position, "speed", speed, "render_time(ms)", render_time.count(), "sleep_time(ms)", sleep_time.count());
-
-            // Adjust drift (if more than a few frames off between audio and video)
-            if (video_frame_diff > 0 && reader->info.has_audio && reader->info.has_video) {
-                // Since the audio and video threads are running independently,
-                // they will quickly get out of sync. To fix this, we calculate
-                // how far ahead or behind the video frame is, and adjust the amount
-                // of time the frame is displayed on the screen (i.e. the sleep time).
-                // If a frame is ahead of the audio, we sleep for longer.
-                // If a frame is behind the audio, we sleep less (or not at all),
-                // in order for the video to catch up.
-                sleep_time += duration_cast<ms>(video_frame_diff * frame_duration);
+            // Sleep to display video image on screen
+            if (remaining_time > remaining_time.zero() ) {
+                if (remaining_time < max_sleep) {
+                    std::this_thread::sleep_for(remaining_time);
+                } else {
+                    // Protect against invalid or too-long sleep times
+                    std::this_thread::sleep_for(max_sleep);
+                }
+            } else {
+                // If we're behind schedule (e.g. preroll/render stall), do not
+                // burst through delayed frames. Resync timing baseline so
+                // playback continues smoothly at normal cadence.
+                start_time = std::chrono::time_point_cast<micro_sec>(current_time);
+                playback_frames = 0;
             }
-
-            else if (video_frame_diff < -10 && reader->info.has_audio && reader->info.has_video) {
-                // Skip frame(s) to catch up to the audio (if more than 10 frames behind)
-                video_position += std::fabs(video_frame_diff) / 2; // Seek forward 1/2 the difference
-                sleep_time = sleep_time.zero(); // Don't sleep now... immediately go to next position
-            }
-
-            // Sleep (leaving the video frame on the screen for the correct amount of time)
-            if (sleep_time > sleep_time.zero()) {
-                std::this_thread::sleep_for(sleep_time);
-            }
-
         }
     }
 
     // Get the next displayed frame (based on speed and direction)
     std::shared_ptr<openshot::Frame> PlayerPrivate::getFrame()
     {
-    try {
-        // Get the next frame (based on speed)
-        if (video_position + speed >= 1 && video_position + speed <= reader->info.video_length)
-            video_position = video_position + speed;
+	int64_t position;
+	uint64_t generation;
+	ReaderBase* current_reader;
+	{
+		std::lock_guard<std::mutex> lock(frame_mutex);
+		// Getting new frame, so clear this flag
+		is_dirty = false;
 
-        if (frame && frame->number == video_position && video_position == last_video_position) {
-            // return cached frame
-            return frame;
-        }
-        else
-        {
-            // Update cache on which frame was retrieved
-            videoCache->setCurrentFramePosition(video_position);
+		// Get the next frame (based on speed)
+		const int current_speed = speed.load();
+		const int64_t next_position = video_position.load() + current_speed;
+		if (next_position >= 1 && next_position <= reader->info.video_length) {
+			video_position = next_position;
+		} else if (next_position < 1) {
+			video_position = 1;
+			speed = 0;
+		} else {
+			video_position = reader->info.video_length;
+			speed = 0;
+		}
 
-            // return frame from reader
-            return reader->GetFrame(video_position);
-        }
+		position = video_position.load();
+		if (frame && frame->number == position && position == last_video_position)
+			return frame;
+		// Increment playback frames (always in the positive direction)
+		playback_frames += std::abs(speed.load());
+		// Update cache position before releasing the seek lock.
+		videoCache->NotifyPlaybackPosition(position);
+		current_reader = reader;
+		generation = seek_generation.load();
+	}
 
-    } catch (const ReaderClosed & e) {
-        // ...
-    } catch (const OutOfBoundsFrame & e) {
-        // ...
+	// Decoding can take much longer than a frame. Keep Seek responsive while
+	// it runs, then publish only if no newer seek invalidated the result.
+	std::shared_ptr<Frame> decoded;
+	try {
+		decoded = current_reader->GetFrame(position);
+	} catch (const ReaderClosed &) {
+	} catch (const OutOfBoundsFrame &) {
+	}
+	{
+		std::lock_guard<std::mutex> lock(frame_mutex);
+		if (seek_generation.load() != generation)
+			return {};
+		frame = std::move(decoded);
+		return frame;
+	}
     }
-    return std::shared_ptr<openshot::Frame>();
+
+    // Seek to a new position
+    void PlayerPrivate::Seek(int64_t new_position)
+    {
+        std::lock_guard<std::mutex> lock(frame_mutex);
+        ++seek_generation;
+        video_position = new_position;
+        last_video_position = 0;
+        // Drop local frame reference so same-frame refreshes cannot reuse stale
+        // content after timeline/clip property updates.
+        frame.reset();
+        // Always force immediate refresh after seek/update, even while playing.
+        is_dirty = true;
     }
 
     // Start video/audio playback
@@ -186,18 +222,36 @@ namespace openshot
     {
         if (video_position < 0) return false;
 
-        stopPlayback(-1);
-        startThread(1);
+        stopPlayback();
+        startThread(Priority::high);
         return true;
     }
 
     // Stop video/audio playback
-    void PlayerPrivate::stopPlayback(int timeOutMilliseconds)
+    void PlayerPrivate::stopPlayback()
     {
-        if (audioPlayback->isThreadRunning() && reader->info.has_audio) audioPlayback->stopThread(timeOutMilliseconds);
-        if (videoCache->isThreadRunning() && reader->info.has_video) videoCache->stopThread(timeOutMilliseconds);
-        if (videoPlayback->isThreadRunning() && reader->info.has_video) videoPlayback->stopThread(timeOutMilliseconds);
-        if (isThreadRunning()) stopThread(timeOutMilliseconds);
+        // Stop the producer first, so it cannot start workers during teardown.
+        // Signal all workers before joining. Never use JUCE's finite-timeout
+        // stopThread, which can forcibly terminate a decoder while holding locks.
+        signalThreadShouldExit();
+        notify();
+        videoCache->Stop();
+        audioPlayback->signalThreadShouldExit();
+        audioPlayback->notify();
+        videoPlayback->signalThreadShouldExit();
+        videoPlayback->render.signal();
+        videoPlayback->notify();
+        waitForThreadToExit(-1);
+        // The producer may have been inside its initial startThread block when
+        // signalled. Repeat worker signals after it has fully exited.
+        audioPlayback->signalThreadShouldExit();
+        audioPlayback->notify();
+        videoPlayback->signalThreadShouldExit();
+        videoPlayback->render.signal();
+        videoPlayback->notify();
+        videoCache->StopThread(-1);
+        audioPlayback->waitForThreadToExit(-1);
+        videoPlayback->waitForThreadToExit(-1);
     }
 
 }

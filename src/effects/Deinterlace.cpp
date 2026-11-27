@@ -6,30 +6,19 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "Deinterlace.h"
 #include "Exceptions.h"
+#include <omp.h>
+
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+#include "VulkanCompositor.h"
+#include "VulkanFrameImage.h"
+#include "Logger.h"
+#endif
 
 using namespace openshot;
 
@@ -65,25 +54,55 @@ void Deinterlace::init_effect_details()
 // modified openshot::Frame object
 std::shared_ptr<openshot::Frame> Deinterlace::GetFrame(std::shared_ptr<openshot::Frame> frame, int64_t frame_number)
 {
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+    if (VulkanRenderingEnabled()) {
+        try {
+            auto surface=frame->GetDeferredImage();
+            if(!surface && ParentClip() && frame->has_image_data) surface=UploadVulkanImage(*frame->GetImage());
+            if(surface) {
+                frame->AddDeferredImage(DeinterlaceVulkanImage(surface,isOdd));
+                return frame;
+            }
+        } catch(const std::exception& e) {
+            Logger::Instance()->Log(std::string("Vulkan Deinterlace CPU fallback: ")+e.what());
+        }
+    }
+#endif
+
 	// Get original size of frame's image
 	int original_width = frame->GetImage()->width();
 	int original_height = frame->GetImage()->height();
 
-	// Get the frame's image
-	std::shared_ptr<QImage> image = frame->GetImage();
+	// Access the current QImage and its raw pixel data
+	auto image           = frame->GetImage();
 	const unsigned char* pixels = image->bits();
+	int line_bytes       = image->bytesPerLine();
 
-	// Create a smaller, new image
-	QImage deinterlaced_image(image->width(), image->height() / 2, QImage::Format_RGBA8888_Premultiplied);
-	const unsigned char* deinterlaced_pixels = deinterlaced_image.bits();
+	// Decide whether to copy even lines (start = 0) or odd lines (start = 1)
+	int start = isOdd ? 1 : 0;
 
-	// Loop through the scanlines of the image (even or odd)
-	int start = 0;
-	if (isOdd)
-		start = 1;
-	for (int row = start; row < image->height(); row += 2) {
-		memcpy((unsigned char*)deinterlaced_pixels, pixels + (row * image->bytesPerLine()), image->bytesPerLine());
-		deinterlaced_pixels += image->bytesPerLine();
+	// Compute how many rows we will end up copying
+	// If start = 0, rows_to_copy = ceil(original_height / 2.0)
+	// If start = 1, rows_to_copy = floor(original_height / 2.0)
+	int rows_to_copy = (original_height - start + 1) / 2;
+	if (rows_to_copy <= 0) return frame;
+
+	// Create a new image with exactly 'rows_to_copy' scanlines
+	QImage deinterlaced_image(
+		original_width,
+		rows_to_copy,
+		QImage::Format_RGBA8888_Premultiplied
+	);
+	unsigned char* deinterlaced_pixels = deinterlaced_image.bits();
+
+	// Copy every other row from the source into the new image
+	// Parallelize over 'i' so each thread writes to a distinct slice of memory
+#pragma omp parallel for
+	for (int i = 0; i < rows_to_copy; i++) {
+		int row = start + 2 * i;
+		const unsigned char* src = pixels + (row * line_bytes);
+		unsigned char* dst       = deinterlaced_pixels + (i * line_bytes);
+		memcpy(dst, src, line_bytes);
 	}
 
 	// Resize deinterlaced image back to original size, and update frame's image
@@ -149,21 +168,12 @@ void Deinterlace::SetJsonValue(const Json::Value root) {
 std::string Deinterlace::PropertiesJSON(int64_t requested_frame) const {
 
 	// Generate JSON properties list
-	Json::Value root;
-	root["id"] = add_property_json("ID", 0.0, "string", Id(), NULL, -1, -1, true, requested_frame);
-	root["position"] = add_property_json("Position", Position(), "float", "", NULL, 0, 30 * 60 * 60 * 48, false, requested_frame);
-	root["layer"] = add_property_json("Track", Layer(), "int", "", NULL, 0, 20, false, requested_frame);
-	root["start"] = add_property_json("Start", Start(), "float", "", NULL, 0, 30 * 60 * 60 * 48, false, requested_frame);
-	root["end"] = add_property_json("End", End(), "float", "", NULL, 0, 30 * 60 * 60 * 48, false, requested_frame);
-	root["duration"] = add_property_json("Duration", Duration(), "float", "", NULL, 0, 30 * 60 * 60 * 48, true, requested_frame);
-	root["isOdd"] = add_property_json("Is Odd Frame", isOdd, "bool", "", NULL, 0, 1, true, requested_frame);
+	Json::Value root = BasePropertiesJSON(requested_frame);
 
 	// Add Is Odd Frame choices (dropdown style)
+	root["isOdd"] = add_property_json("Is Odd Frame", isOdd, "bool", "", NULL, 0, 1, false, requested_frame);
 	root["isOdd"]["choices"].append(add_property_choice_json("Yes", true, isOdd));
 	root["isOdd"]["choices"].append(add_property_choice_json("No", false, isOdd));
-
-	// Set the parent effect which properties this effect will inherit
-	root["parent_effect_id"] = add_property_json("Parent", 0.0, "string", info.parent_effect_id, NULL, -1, -1, false, requested_frame);
 
 	// Return formatted string
 	return root.toStyledString();

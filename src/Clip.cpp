@@ -6,42 +6,80 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2026 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
+#include "GpuMetrics.h"
+#include <utility>
 #include "Clip.h"
+
+#include "AudioResampler.h"
 #include "Exceptions.h"
 #include "FFmpegReader.h"
 #include "FrameMapper.h"
-#ifdef USE_IMAGEMAGICK
-	#include "ImageReader.h"
-	#include "TextReader.h"
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+#include "VulkanCompositor.h"
+#include "VulkanFrameImage.h"
+#include <QTextLayout>
+#include <QGlyphRun>
+#include <QRawFont>
+#include <QFontMetrics>
+#include <array>
+#include <cstring>
 #endif
 #include "QtImageReader.h"
+#include "QtTextReader.h"
 #include "ChunkReader.h"
 #include "DummyReader.h"
 #include "Timeline.h"
+#include "Logger.h"
+#include "effects/AudioVisualization.h"
+
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <sstream>
+#include <QPainter>
+#include <QPainterPath>
+
+#ifdef USE_IMAGEMAGICK
+	#include "MagickUtilities.h"
+	#include "ImageReader.h"
+	#include "TextReader.h"
+#endif
+
+#include <Qt>
 
 using namespace openshot;
+
+namespace {
+	struct CompositeChoice { const char* name; CompositeType value; };
+	const CompositeChoice composite_choices[] = {
+		{"Normal",      COMPOSITE_SOURCE_OVER},
+
+		// Darken group
+		{"Darken",      COMPOSITE_DARKEN},
+		{"Multiply",    COMPOSITE_MULTIPLY},
+		{"Color Burn",  COMPOSITE_COLOR_BURN},
+
+		// Lighten group
+		{"Lighten",     COMPOSITE_LIGHTEN},
+		{"Screen",      COMPOSITE_SCREEN},
+		{"Color Dodge", COMPOSITE_COLOR_DODGE},
+		{"Add",         COMPOSITE_PLUS},
+
+		// Contrast group
+		{"Overlay",     COMPOSITE_OVERLAY},
+		{"Soft Light",  COMPOSITE_SOFT_LIGHT},
+		{"Hard Light",  COMPOSITE_HARD_LIGHT},
+
+		// Compare
+		{"Difference",  COMPOSITE_DIFFERENCE},
+		{"Exclusion",   COMPOSITE_EXCLUSION},
+	};
+	const int composite_choices_count = sizeof(composite_choices)/sizeof(CompositeChoice);
+}
 
 // Init default settings for a clip
 void Clip::init_settings()
@@ -50,13 +88,18 @@ void Clip::init_settings()
 	Position(0.0);
 	Layer(0);
 	Start(0.0);
-	End(0.0);
+	ClipBase::End(0.0);
 	gravity = GRAVITY_CENTER;
 	scale = SCALE_FIT;
+	location_coordinate_system = "auto";
+	scale_none_legacy = false;
 	anchor = ANCHOR_CANVAS;
 	display = FRAME_DISPLAY_NONE;
 	mixing = VOLUME_MIX_NONE;
+	composite = COMPOSITE_SOURCE_OVER;
 	waveform = false;
+	waveform_mode = AUDIO_VISUALIZATION_FILLED_WAVEFORM;
+	reader_orientation_mode = ReaderOrientationMode::Reader;
 	previous_properties = "";
 	parentObjectId = "";
 
@@ -70,6 +113,8 @@ void Clip::init_settings()
 
 	// Init alpha
 	alpha = Keyframe(1.0);
+	margin = Keyframe(0.0);
+	corner_radius = Keyframe(0.0);
 
 	// Init time & volume
 	time = Keyframe(1.0);
@@ -116,27 +161,65 @@ void Clip::init_reader_settings() {
 
 		// Initialize info struct
 		info = reader->info;
+
+		// Init cache
+		final_cache.SetMaxBytesFromInfo(8, info.width, info.height, info.sample_rate, info.channels);
 	}
 }
 
-// Init reader's rotation (if any)
 void Clip::init_reader_rotation() {
-	// Dont init rotation if clip has keyframes
-	if (rotation.GetCount() > 0)
+	// Only apply metadata rotation if clip rotation has not been explicitly set.
+	if (rotation.GetCount() > 0 || !reader)
 		return;
 
-	// Init rotation
-	if (reader && reader->info.metadata.count("rotate") > 0) {
-		// Use reader metadata rotation (if any)
-		// This is typical with cell phone videos filmed in different orientations
-		try {
-			float rotate_metadata = strtof(reader->info.metadata["rotate"].c_str(), 0);
-			rotation = Keyframe(rotate_metadata);
-		} catch (const std::exception& e) {}
+	if (reader->ApplyOrientationMetadata()) {
+		rotation = Keyframe(0.0f);
+		return;
 	}
-	else
-		// Default no rotation
-		rotation = Keyframe(0.0);
+
+	const auto rotate_meta = reader->info.metadata.find("rotate");
+	if (rotate_meta == reader->info.metadata.end()) {
+		// Ensure rotation keyframes always start with a default 0° point.
+		rotation = Keyframe(0.0f);
+		return;
+	}
+
+	float rotate_angle = 0.0f;
+	try {
+		rotate_angle = strtof(rotate_meta->second.c_str(), nullptr);
+	} catch (const std::exception& e) {
+		return; // ignore invalid metadata
+	}
+
+	rotation = Keyframe(rotate_angle);
+
+	// Do not overwrite user-authored scale curves.
+	auto has_default_scale = [](const Keyframe& kf) {
+		return kf.GetCount() == 1 && fabs(kf.GetPoint(0).co.Y - 1.0) < 0.00001;
+	};
+	if (!has_default_scale(scale_x) || !has_default_scale(scale_y))
+		return;
+
+	// No need to adjust scaling when the metadata rotation is effectively zero.
+	if (fabs(rotate_angle) < 0.0001f)
+		return;
+
+	float w = static_cast<float>(reader->info.width);
+	float h = static_cast<float>(reader->info.height);
+	if (w <= 0.0f || h <= 0.0f)
+		return;
+
+	float rad = rotate_angle * static_cast<float>(M_PI) / 180.0f;
+
+	float new_width  = fabs(w * cos(rad)) + fabs(h * sin(rad));
+	float new_height = fabs(w * sin(rad)) + fabs(h * cos(rad));
+	if (new_width <= 0.0f || new_height <= 0.0f)
+		return;
+
+	float uniform_scale = std::min(w / new_width, h / new_height);
+
+	scale_x = Keyframe(uniform_scale);
+	scale_y = Keyframe(uniform_scale);
 }
 
 // Default Constructor for a clip
@@ -158,7 +241,7 @@ Clip::Clip(ReaderBase* new_reader) : resampler(NULL), reader(new_reader), alloca
 
 	// Update duration and set parent
 	if (reader) {
-		End(reader->info.duration);
+		ClipBase::End(reader->info.duration);
 		reader->ParentClip(this);
 		// Init reader info struct
 		init_reader_settings();
@@ -170,54 +253,11 @@ Clip::Clip(std::string path) : resampler(NULL), reader(NULL), allocated_reader(N
 {
 	// Init all default settings
 	init_settings();
-
-	// Get file extension (and convert to lower case)
-	std::string ext = get_file_extension(path);
-	std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-
-	// Determine if common video formats
-	if (ext=="avi" || ext=="mov" || ext=="mkv" ||  ext=="mpg" || ext=="mpeg" || ext=="mp3" || ext=="mp4" || ext=="mts" ||
-		ext=="ogg" || ext=="wav" || ext=="wmv" || ext=="webm" || ext=="vob")
-	{
-		try
-		{
-			// Open common video format
-			reader = new openshot::FFmpegReader(path);
-
-		} catch(...) { }
-	}
-	if (ext=="osp")
-	{
-		try
-		{
-			// Open common video format
-			reader = new openshot::Timeline(path, true);
-
-		} catch(...) { }
-	}
-
-
-	// If no video found, try each reader
-	if (!reader)
-	{
-		try
-		{
-			// Try an image reader
-			reader = new openshot::QtImageReader(path);
-
-		} catch(...) {
-			try
-			{
-				// Try a video reader
-				reader = new openshot::FFmpegReader(path);
-
-			} catch(...) { }
-		}
-	}
+	reader = CreateReader(path);
 
 	// Update duration and set parent
 	if (reader) {
-		End(reader->info.duration);
+		ClipBase::End(reader->info.duration);
 		reader->ParentClip(this);
 		allocated_reader = reader;
 		// Init reader info struct
@@ -225,13 +265,56 @@ Clip::Clip(std::string path) : resampler(NULL), reader(NULL), allocated_reader(N
 	}
 }
 
+ReaderBase* Clip::CreateReader(std::string path, bool inspect_reader)
+{
+	// Get file extension (and convert to lower case)
+	std::string ext = get_file_extension(path);
+	std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+
+	// Determine if common video formats (or image sequences)
+	if (ext=="avi" || ext=="flac" || ext=="mov" || ext=="mkv" ||  ext=="mpg" || ext=="mpeg" || ext=="mp3" || ext=="mp4" || ext=="mts" ||
+		ext=="ogg" || ext=="wav" || ext=="wmv" || ext=="webm" || ext=="vob" || ext=="gif" || path.find("%") != std::string::npos)
+	{
+		try
+		{
+			return new openshot::FFmpegReader(path, inspect_reader);
+		} catch(...) { }
+	}
+	if (ext=="osp")
+	{
+		try
+		{
+			return new openshot::Timeline(path, true);
+		} catch(...) { }
+	}
+
+	// If no video found, try each reader
+	try
+	{
+		return new openshot::QtImageReader(path, inspect_reader);
+	} catch(...) {
+		try
+		{
+			return new openshot::FFmpegReader(path, inspect_reader);
+		} catch(...) { }
+	}
+
+	return NULL;
+}
+
 // Destructor
 Clip::~Clip()
 {
+	// Python can release a borrowed clip before the timeline containing it.
+	// Its effects may already have been released too, so only forget the clip.
+	if (registered_timeline)
+		static_cast<Timeline*>(registered_timeline)->ForgetClip(this);
+
 	// Delete the reader if clip created it
 	if (allocated_reader) {
 		delete allocated_reader;
 		allocated_reader = NULL;
+		reader = NULL;
 	}
 
 	// Close the resampler
@@ -239,53 +322,80 @@ Clip::~Clip()
 		delete resampler;
 		resampler = NULL;
 	}
+
+	// Close clip
+	Close();
 }
 
 // Attach clip to bounding box
 void Clip::AttachToObject(std::string object_id)
 {
-	// Search for the tracked object on the timeline
-	Timeline* parentTimeline = (Timeline *) ParentTimeline();
+	parentObjectId = object_id;
+	ResolveParent();
+}
 
-	if (parentTimeline) {
-		// Create a smart pointer to the tracked object from the timeline
-		std::shared_ptr<openshot::TrackedObjectBase> trackedObject = parentTimeline->GetTrackedObject(object_id);
-		Clip* clipObject = parentTimeline->GetClip(object_id);
+void Clip::ResolveParent() const
+{
+	parentTrackedObject.reset();
+	parentClipObject = nullptr;
+	if (!timeline || parentObjectId.empty())
+		return;
 
-		// Check for valid tracked object
-		if (trackedObject){
-			SetAttachedObject(trackedObject);
-		}
-		else if (clipObject) {
-			SetAttachedClip(clipObject);
-		}
+	auto parent_timeline = static_cast<Timeline*>(timeline);
+	parentTrackedObject = parent_timeline->GetTrackedObject(parentObjectId);
+	if (parentTrackedObject && parentTrackedObject->ParentClip() == this)
+		parentTrackedObject.reset();
+	if (!parentTrackedObject) {
+		auto clip = parent_timeline->GetClip(parentObjectId);
+		if (clip != this)
+			parentClipObject = clip;
 	}
-	return;
 }
 
-// Set the pointer to the trackedObject this clip is attached to
+// Store IDs so pointer-based attachment also follows removal and replacement.
 void Clip::SetAttachedObject(std::shared_ptr<openshot::TrackedObjectBase> trackedObject){
-	parentTrackedObject = trackedObject;
-	return;
+	AttachToObject(trackedObject ? trackedObject->Id() : "");
 }
 
-// Set the pointer to the clip this clip is attached to
 void Clip::SetAttachedClip(Clip* clipObject){
-	parentClipObject = clipObject;
-	return;
+	AttachToObject(clipObject ? clipObject->Id() : "");
 }
 
 /// Set the current reader
 void Clip::Reader(ReaderBase* new_reader)
 {
+	// Delete previously allocated reader (if not related to new reader)
+	// FrameMappers that point to the same allocated reader are ignored
+	bool is_same_reader = false;
+	if (new_reader && allocated_reader) {
+		if (new_reader->Name() == "FrameMapper") {
+			// Determine if FrameMapper is pointing at the same allocated ready
+			FrameMapper* clip_mapped_reader = static_cast<FrameMapper*>(new_reader);
+			if (allocated_reader == clip_mapped_reader->Reader()) {
+				is_same_reader = true;
+			}
+		}
+	}
+	// Clear existing allocated reader (if different)
+	if (allocated_reader && !is_same_reader) {
+		reader->Close();
+		allocated_reader->Close();
+		delete allocated_reader;
+		reader = NULL;
+		allocated_reader = NULL;
+	}
+
 	// set reader pointer
 	reader = new_reader;
 
 	// set parent
-	reader->ParentClip(this);
+	if (reader) {
+		reader->ApplyOrientationMetadata(reader_orientation_mode == ReaderOrientationMode::Reader);
+		reader->ParentClip(this);
 
-	// Init reader info struct
-	init_reader_settings();
+		// Init reader info struct
+		init_reader_settings();
+	}
 }
 
 /// Get the current reader
@@ -312,7 +422,7 @@ void Clip::Open()
 
 		// Set some clip properties from the file reader
 		if (end == 0.0)
-			End(reader->info.duration);
+			ClipBase::End(reader->info.duration);
 	}
 	else
 		// Throw error if reader not initialized
@@ -322,16 +432,16 @@ void Clip::Open()
 // Close the internal reader
 void Clip::Close()
 {
-	is_open = false;
-	if (reader) {
-		ZmqLogger::Instance()->AppendDebugMethod("Clip::Close");
+	if (is_open && reader) {
+		Logger::Instance()->AppendDebugMethod("Clip::Close");
 
 		// Close the reader
 		reader->Close();
 	}
-	else
-		// Throw error if reader not initialized
-		throw ReaderClosed("No Reader has been initialized for this Clip.  Call Reader(*reader) before calling this method.");
+
+	// Clear cache
+	final_cache.Clear();
+	is_open = false;
 }
 
 // Get end position of clip (trim end of video), which can be affected by the time curve.
@@ -356,50 +466,40 @@ float Clip::End() const
 		return end;
 }
 
-// Create an openshot::Frame object for a specific frame number of this reader.
-std::shared_ptr<Frame> Clip::GetFrame(int64_t frame_number)
-{
-	// Check for open reader (or throw exception)
-	if (!is_open)
-		throw ReaderClosed("The Clip is closed.  Call Open() before calling this method.");
+// Override End() position
+void Clip::End(float value) {
+	ClipBase::End(value);
+}
 
-	if (reader)
-	{
-		// Adjust out of bounds frame number
-		frame_number = adjust_frame_number_minimum(frame_number);
+// Set associated Timeline pointer
+void Clip::ParentTimeline(openshot::TimelineBase* new_timeline) {
+	timeline = new_timeline;
+	parentClipObject = nullptr;
+	parentTrackedObject.reset();
+	for (auto effect : effects)
+		effect->ParentTimeline(new_timeline);
 
-		// Get the original frame and pass it to GetFrame overload
-		std::shared_ptr<Frame> original_frame = GetOrCreateFrame(frame_number);
-		return GetFrame(original_frame, frame_number, NULL);
-	}
-	else
-		// Throw error if reader not initialized
-		throw ReaderClosed("No Reader has been initialized for this Clip.  Call Reader(*reader) before calling this method.");
+	// Clear cache (it might have changed)
+	final_cache.Clear();
 }
 
 // Create an openshot::Frame object for a specific frame number of this reader.
-std::shared_ptr<Frame> Clip::GetFrame(std::shared_ptr<openshot::Frame> background_frame, int64_t frame_number)
+std::shared_ptr<Frame> Clip::GetFrame(int64_t clip_frame_number)
 {
-    // Check for open reader (or throw exception)
-    if (!is_open)
-        throw ReaderClosed("The Clip is closed.  Call Open() before calling this method.");
+	// Call override of GetFrame
+	return GetFrame(NULL, clip_frame_number, NULL);
+}
 
-    if (reader)
-    {
-        // Adjust out of bounds frame number
-        frame_number = adjust_frame_number_minimum(frame_number);
-
-        // Get the original frame and pass it to GetFrame overload
-        std::shared_ptr<Frame> original_frame = GetOrCreateFrame(frame_number);
-        return GetFrame(original_frame, frame_number, NULL);
-    }
-    else
-        // Throw error if reader not initialized
-        throw ReaderClosed("No Reader has been initialized for this Clip.  Call Reader(*reader) before calling this method.");
+// Create an openshot::Frame object for a specific frame number of this reader.
+// NOTE: background_frame is ignored in this method (this method is only used by Effect classes)
+std::shared_ptr<Frame> Clip::GetFrame(std::shared_ptr<openshot::Frame> background_frame, int64_t clip_frame_number)
+{
+	// Call override of GetFrame
+	return GetFrame(background_frame, clip_frame_number, NULL);
 }
 
 // Use an existing openshot::Frame object and draw this Clip's frame onto it
-std::shared_ptr<Frame> Clip::GetFrame(std::shared_ptr<openshot::Frame> background_frame, int64_t frame_number, openshot::TimelineInfoStruct* options)
+std::shared_ptr<Frame> Clip::GetFrame(std::shared_ptr<openshot::Frame> background_frame, int64_t clip_frame_number, openshot::TimelineInfoStruct* options)
 {
 	// Check for open reader (or throw exception)
 	if (!is_open)
@@ -407,39 +507,73 @@ std::shared_ptr<Frame> Clip::GetFrame(std::shared_ptr<openshot::Frame> backgroun
 
 	if (reader)
 	{
-		// Adjust out of bounds frame number
-		frame_number = adjust_frame_number_minimum(frame_number);
+		// Get frame object
+		std::shared_ptr<Frame> frame = NULL;
 
-		// Is a time map detected
-		int64_t new_frame_number = frame_number;
-		int64_t time_mapped_number = adjust_frame_number_minimum(time.GetLong(frame_number));
-		if (time.GetLength() > 1)
-			new_frame_number = time_mapped_number;
+		// Generate clip frame
+		frame = GetOrCreateFrame(clip_frame_number);
 
-		// Now that we have re-mapped what frame number is needed, go and get the frame pointer
-		std::shared_ptr<Frame> original_frame = GetOrCreateFrame(new_frame_number);
+		// Get frame size and frame #
+		int64_t timeline_frame_number = clip_frame_number;
+		QSize timeline_size(frame->GetWidth(), frame->GetHeight());
+		if (background_frame) {
+			// If a background frame is provided, use it instead
+			timeline_frame_number = background_frame->number;
+			timeline_size.setWidth(background_frame->GetWidth());
+			timeline_size.setHeight(background_frame->GetHeight());
+		}
 
-		// Get time mapped frame number (used to increase speed, change direction, etc...)
-		// TODO: Handle variable # of samples, since this resamples audio for different speeds (only when time curve is set)
-		get_time_mapped_frame(original_frame, new_frame_number);
+		// Get time mapped frame object (used to increase speed, change direction, etc...)
+		apply_timemapping(frame);
 
-		// Apply local effects to the frame (if any)
-		apply_effects(original_frame);
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+		// Audio-only/disabled-video layers have nothing to paint in the basic
+		// pipeline. Keep their audio, without manufacturing a CPU canvas.
+		if (options && (!reader->info.has_video || has_video.GetInt(frame->number) == 0) &&
+			!Waveform() && effects.empty() &&
+			(!timeline || static_cast<Timeline*>(timeline)->Effects().empty()))
+			return frame;
+#endif
 
-        // Apply global timeline effects (i.e. transitions & masks... if any)
-        if (timeline != NULL && options != NULL) {
-            if (options->is_top_clip) {
-                // Apply global timeline effects (only to top clip... if overlapping, pass in timeline frame number)
-                Timeline* timeline_instance = (Timeline*) timeline;
-                original_frame = timeline_instance->apply_effects(original_frame, background_frame->number, Layer());
-            }
-        }
+		// Apply waveform image (if any)
+		apply_waveform(frame, timeline_size);
 
-		// Apply keyframe / transforms
-		apply_keyframes(original_frame, background_frame->GetImage());
+		// Apply effects BEFORE applying keyframes (if any local or global effects are used)
+		apply_effects(frame, timeline_frame_number, options, true);
 
-		// Return processed 'frame'
-		return original_frame;
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+		// Timeline layers only need the composited result, so skip the separate transform pass
+		if (options && background_frame && apply_vulkan_layer(frame, background_frame, timeline_size))
+			return frame;
+#endif
+
+		// Apply keyframe / transforms to current clip image
+		apply_keyframes(frame, timeline_size);
+
+		// Apply effects AFTER applying keyframes (if any local or global effects are used)
+		apply_effects(frame, timeline_frame_number, options, false);
+
+		// Timeline composition can paint directly into the timeline-owned background
+		// without mutating the cached clip frame.
+		if (options) {
+			if (!background_frame) {
+				background_frame = std::make_shared<Frame>(frame->number, frame->GetWidth(), frame->GetHeight(),
+														   "#00000000", frame->GetAudioSamplesCount(),
+														   frame->GetAudioChannelsCount());
+			}
+			apply_background(frame, background_frame, false);
+			return frame;
+		}
+
+		// No background: return the frame directly.
+		if (!background_frame) {
+			return frame;
+		}
+
+		// Always composite on a copy so cached frame pixels remain immutable.
+		auto output = std::make_shared<Frame>(*frame.get());
+		apply_background(output, background_frame, true);
+		return output;
 	}
 	else
 		// Throw error if reader not initialized
@@ -458,43 +592,32 @@ openshot::EffectBase* Clip::GetEffect(const std::string& id)
 	return nullptr;
 }
 
+// Return the associated ParentClip (if any)
+openshot::Clip* Clip::GetParentClip() {
+	ResolveParent();
+	return parentClipObject;
+}
+
+// Return the current tracked object, or ignore an unavailable parent.
+std::shared_ptr<openshot::TrackedObjectBase> Clip::GetParentTrackedObject() {
+	ResolveParent();
+	return parentTrackedObject;
+}
+
 // Get file extension
 std::string Clip::get_file_extension(std::string path)
 {
-	// return last part of path
-	return path.substr(path.find_last_of(".") + 1);
-}
-
-// Reverse an audio buffer
-void Clip::reverse_buffer(juce::AudioSampleBuffer* buffer)
-{
-	int number_of_samples = buffer->getNumSamples();
-	int channels = buffer->getNumChannels();
-
-	// Reverse array (create new buffer to hold the reversed version)
-	juce::AudioSampleBuffer *reversed = new juce::AudioSampleBuffer(channels, number_of_samples);
-	reversed->clear();
-
-	for (int channel = 0; channel < channels; channel++)
-	{
-		int n=0;
-		for (int s = number_of_samples - 1; s >= 0; s--, n++)
-			reversed->getWritePointer(channel)[n] = buffer->getWritePointer(channel)[s];
+	// Return last part of path safely (handle filenames without a dot)
+	const auto dot_pos = path.find_last_of('.');
+	if (dot_pos == std::string::npos || dot_pos + 1 >= path.size()) {
+		return std::string();
 	}
 
-	// Copy the samples back to the original array
-	buffer->clear();
-	// Loop through channels, and get audio samples
-	for (int channel = 0; channel < channels; channel++)
-		// Get the audio samples for this channel
-		buffer->addFrom(channel, 0, reversed->getReadPointer(channel), number_of_samples, 1.0f);
-
-	delete reversed;
-	reversed = NULL;
+	return path.substr(dot_pos + 1);
 }
 
 // Adjust the audio and image of a time mapped frame
-void Clip::get_time_mapped_frame(std::shared_ptr<Frame> frame, int64_t frame_number)
+void Clip::apply_timemapping(std::shared_ptr<Frame> frame)
 {
 	// Check for valid reader
 	if (!reader)
@@ -504,193 +627,145 @@ void Clip::get_time_mapped_frame(std::shared_ptr<Frame> frame, int64_t frame_num
 	// Check for a valid time map curve
 	if (time.GetLength() > 1)
 	{
-		const GenericScopedLock<juce::CriticalSection> lock(getFrameCriticalSection);
+		const std::lock_guard<std::recursive_mutex> lock(getFrameMutex);
 
-		// create buffer and resampler
-		juce::AudioSampleBuffer *samples = NULL;
-		if (!resampler)
-			resampler = new AudioResampler();
+		int64_t clip_frame_number = frame->number;
+		int64_t new_frame_number = adjust_frame_number_minimum(time.GetLong(clip_frame_number));
 
-		// Get new frame number
-		int new_frame_number = frame->number;
+		// create buffer
+		juce::AudioBuffer<float> *source_samples = nullptr;
 
-		// Get delta (difference in previous Y value)
-		int delta = int(round(time.GetDelta(frame_number)));
+		// Get delta (difference from this frame to the next time mapped frame: Y value)
+		double delta = time.GetDelta(clip_frame_number + 1);
+		const bool prev_is_increasing = time.IsIncreasing(clip_frame_number);
+		const bool is_increasing = time.IsIncreasing(clip_frame_number + 1);
 
-		// Init audio vars
-		int channels = reader->info.channels;
-		int number_of_samples = GetOrCreateFrame(new_frame_number)->GetAudioSamplesCount();
+		// Determine length of source audio (in samples)
+		// A delta of 1.0 == normal expected samples
+		// A delta of 0.5 == 50% of normal expected samples
+		// A delta of 2.0 == 200% of normal expected samples
+		int target_sample_count = Frame::GetSamplesPerFrame(adjust_timeline_framenumber(clip_frame_number), Reader()->info.fps,
+															  Reader()->info.sample_rate,
+															  Reader()->info.channels);
+		int source_sample_count = round(target_sample_count * fabs(delta));
 
-		// Only resample audio if needed
-		if (reader->info.has_audio) {
-			// Determine if we are speeding up or slowing down
-			if (time.GetRepeatFraction(frame_number).den > 1) {
-				// SLOWING DOWN AUDIO
-				// Resample data, and return new buffer pointer
-				juce::AudioSampleBuffer *resampled_buffer = NULL;
+		// Determine starting audio location
+		AudioLocation location;
+		if (previous_location.frame == 0 || abs(new_frame_number - previous_location.frame) > 2 || prev_is_increasing != is_increasing) {
+			// No previous location OR gap detected
+			location.frame = new_frame_number;
+			location.sample_start = 0;
 
-				// SLOW DOWN audio (split audio)
-				samples = new juce::AudioSampleBuffer(channels, number_of_samples);
-				samples->clear();
-
-				// Loop through channels, and get audio samples
-				for (int channel = 0; channel < channels; channel++)
-					// Get the audio samples for this channel
-					samples->addFrom(channel, 0, GetOrCreateFrame(new_frame_number)->GetAudioSamples(channel),
-									 number_of_samples, 1.0f);
-
-				// Reverse the samples (if needed)
-				if (!time.IsIncreasing(frame_number))
-					reverse_buffer(samples);
-
-				// Resample audio to be X times slower (where X is the denominator of the repeat fraction)
-				resampler->SetBuffer(samples, 1.0 / time.GetRepeatFraction(frame_number).den);
-
-				// Resample the data (since it's the 1st slice)
-				resampled_buffer = resampler->GetResampledBuffer();
-
-				// Just take the samples we need for the requested frame
-				int start = (number_of_samples * (time.GetRepeatFraction(frame_number).num - 1));
-				if (start > 0)
-					start -= 1;
-				for (int channel = 0; channel < channels; channel++)
-					// Add new (slower) samples, to the frame object
-					frame->AddAudio(true, channel, 0, resampled_buffer->getReadPointer(channel, start),
-										number_of_samples, 1.0f);
-
-				// Clean up
-				resampled_buffer = NULL;
-
+			// Create / Reset resampler
+			// We don't want to interpolate between unrelated audio data
+			if (resampler) {
+				delete resampler;
+				resampler = nullptr;
 			}
-			else if (abs(delta) > 1 && abs(delta) < 100) {
-				int start = 0;
-				if (delta > 0) {
-					// SPEED UP (multiple frames of audio), as long as it's not more than X frames
-					int total_delta_samples = 0;
-					for (int delta_frame = new_frame_number - (delta - 1);
-						 delta_frame <= new_frame_number; delta_frame++)
-						total_delta_samples += Frame::GetSamplesPerFrame(delta_frame, reader->info.fps,
-																		 reader->info.sample_rate,
-																		 reader->info.channels);
+			// Init resampler with # channels from Reader (should match the timeline)
+			resampler = new AudioResampler(Reader()->info.channels);
 
-					// Allocate a new sample buffer for these delta frames
-					samples = new juce::AudioSampleBuffer(channels, total_delta_samples);
-					samples->clear();
+			// Allocate buffer of silence to initialize some data inside the resampler
+			// To prevent it from becoming input limited
+			juce::AudioBuffer<float> init_samples(Reader()->info.channels, 64);
+			init_samples.clear();
+			resampler->SetBuffer(&init_samples, 1.0);
+			resampler->GetResampledBuffer();
 
-					// Loop through each frame in this delta
-					for (int delta_frame = new_frame_number - (delta - 1);
-						 delta_frame <= new_frame_number; delta_frame++) {
-						// buffer to hold detal samples
-						int number_of_delta_samples = GetOrCreateFrame(delta_frame)->GetAudioSamplesCount();
-						juce::AudioSampleBuffer *delta_samples = new juce::AudioSampleBuffer(channels,
-																					   number_of_delta_samples);
-						delta_samples->clear();
-
-						for (int channel = 0; channel < channels; channel++)
-							delta_samples->addFrom(channel, 0, GetOrCreateFrame(delta_frame)->GetAudioSamples(channel),
-												   number_of_delta_samples, 1.0f);
-
-						// Reverse the samples (if needed)
-						if (!time.IsIncreasing(frame_number))
-							reverse_buffer(delta_samples);
-
-						// Copy the samples to
-						for (int channel = 0; channel < channels; channel++)
-							// Get the audio samples for this channel
-							samples->addFrom(channel, start, delta_samples->getReadPointer(channel),
-											 number_of_delta_samples, 1.0f);
-
-						// Clean up
-						delete delta_samples;
-						delta_samples = NULL;
-
-						// Increment start position
-						start += number_of_delta_samples;
-					}
-				}
-				else {
-					// SPEED UP (multiple frames of audio), as long as it's not more than X frames
-					int total_delta_samples = 0;
-					for (int delta_frame = new_frame_number - (delta + 1);
-						 delta_frame >= new_frame_number; delta_frame--)
-						total_delta_samples += Frame::GetSamplesPerFrame(delta_frame, reader->info.fps,
-																		 reader->info.sample_rate,
-																		 reader->info.channels);
-
-					// Allocate a new sample buffer for these delta frames
-					samples = new juce::AudioSampleBuffer(channels, total_delta_samples);
-					samples->clear();
-
-					// Loop through each frame in this delta
-					for (int delta_frame = new_frame_number - (delta + 1);
-						 delta_frame >= new_frame_number; delta_frame--) {
-						// buffer to hold delta samples
-						int number_of_delta_samples = GetOrCreateFrame(delta_frame)->GetAudioSamplesCount();
-						juce::AudioSampleBuffer *delta_samples = new juce::AudioSampleBuffer(channels,
-																					   number_of_delta_samples);
-						delta_samples->clear();
-
-						for (int channel = 0; channel < channels; channel++)
-							delta_samples->addFrom(channel, 0, GetOrCreateFrame(delta_frame)->GetAudioSamples(channel),
-												   number_of_delta_samples, 1.0f);
-
-						// Reverse the samples (if needed)
-						if (!time.IsIncreasing(frame_number))
-							reverse_buffer(delta_samples);
-
-						// Copy the samples to
-						for (int channel = 0; channel < channels; channel++)
-							// Get the audio samples for this channel
-							samples->addFrom(channel, start, delta_samples->getReadPointer(channel),
-											 number_of_delta_samples, 1.0f);
-
-						// Clean up
-						delete delta_samples;
-						delta_samples = NULL;
-
-						// Increment start position
-						start += number_of_delta_samples;
-					}
-				}
-
-				// Resample audio to be X times faster (where X is the delta of the repeat fraction)
-				resampler->SetBuffer(samples, float(start) / float(number_of_samples));
-
-				// Resample data, and return new buffer pointer
-				juce::AudioSampleBuffer *buffer = resampler->GetResampledBuffer();
-
-				// Add the newly resized audio samples to the current frame
-				for (int channel = 0; channel < channels; channel++)
-					// Add new (slower) samples, to the frame object
-					frame->AddAudio(true, channel, 0, buffer->getReadPointer(channel), number_of_samples, 1.0f);
-
-				// Clean up
-				buffer = NULL;
-			}
-			else {
-				// Use the samples on this frame (but maybe reverse them if needed)
-				samples = new juce::AudioSampleBuffer(channels, number_of_samples);
-				samples->clear();
-
-				// Loop through channels, and get audio samples
-				for (int channel = 0; channel < channels; channel++)
-					// Get the audio samples for this channel
-					samples->addFrom(channel, 0, frame->GetAudioSamples(channel), number_of_samples, 1.0f);
-
-				// reverse the samples
-				if (!time.IsIncreasing(frame_number))
-					reverse_buffer(samples);
-
-				// Add reversed samples to the frame object
-				for (int channel = 0; channel < channels; channel++)
-					frame->AddAudio(true, channel, 0, samples->getReadPointer(channel), number_of_samples, 1.0f);
-
-
-			}
-
-			delete samples;
-			samples = NULL;
+		} else {
+			// Use previous location
+			location = previous_location;
 		}
+
+		if (source_sample_count <= 0) {
+			// Add silence and bail (we don't need any samples)
+			frame->AddAudioSilence(target_sample_count);
+			return;
+		}
+
+		// Allocate a new sample buffer for these delta frames
+		source_samples = new juce::AudioBuffer<float>(Reader()->info.channels, source_sample_count);
+		source_samples->clear();
+
+		// Determine ending audio location
+		int remaining_samples = source_sample_count;
+		int source_pos = 0;
+		while (remaining_samples > 0) {
+			std::shared_ptr<Frame> source_frame = GetOrCreateFrame(location.frame, false);
+			int frame_sample_count = source_frame->GetAudioSamplesCount() - location.sample_start;
+
+            // Inform FrameMapper of the direction for THIS mapper frame
+            if (auto *fm = dynamic_cast<FrameMapper*>(reader)) {
+                fm->SetDirectionHint(is_increasing);
+            }
+            source_frame->SetAudioDirection(is_increasing);
+
+			if (frame_sample_count == 0) {
+				// No samples found in source frame (fill with silence)
+				if (is_increasing) {
+					location.frame++;
+				} else {
+					location.frame--;
+				}
+				location.sample_start = 0;
+				break;
+			}
+			if (remaining_samples - frame_sample_count >= 0) {
+				// Use all frame samples & increment location
+				for (int channel = 0; channel < source_frame->GetAudioChannelsCount(); channel++) {
+					source_samples->addFrom(channel, source_pos, source_frame->GetAudioSamples(channel) + location.sample_start, frame_sample_count, 1.0f);
+				}
+				if (is_increasing) {
+					location.frame++;
+				} else {
+					location.frame--;   
+				}
+				location.sample_start = 0;
+				remaining_samples -= frame_sample_count;
+				source_pos += frame_sample_count;
+
+			} else {
+				// Use just what is needed (and reverse samples)
+				for (int channel = 0; channel < source_frame->GetAudioChannelsCount(); channel++) {
+					source_samples->addFrom(channel, source_pos, source_frame->GetAudioSamples(channel) + location.sample_start, remaining_samples, 1.0f);
+				}
+				location.sample_start += remaining_samples;
+				remaining_samples = 0;
+				source_pos += remaining_samples;
+			}
+
+		}
+
+		// Resize audio for current frame object + fill with silence
+		// We are fixing to clobber this with actual audio data (possibly resampled)
+		frame->AddAudioSilence(target_sample_count);
+
+		if (source_sample_count != target_sample_count) {
+			// Resample audio (if needed)
+			double resample_ratio = double(source_sample_count) / double(target_sample_count);
+			resampler->SetBuffer(source_samples, resample_ratio);
+
+			// Resample the data
+			juce::AudioBuffer<float> *resampled_buffer = resampler->GetResampledBuffer();
+
+			// Fill the frame with resampled data
+			for (int channel = 0; channel < Reader()->info.channels; channel++) {
+				// Add new (slower) samples, to the frame object
+				frame->AddAudio(true, channel, 0, resampled_buffer->getReadPointer(channel, 0), std::min(resampled_buffer->getNumSamples(), target_sample_count), 1.0f);
+			}
+		} else {
+			// Fill the frame
+			for (int channel = 0; channel < Reader()->info.channels; channel++) {
+				// Add new (slower) samples, to the frame object
+				frame->AddAudio(true, channel, 0, source_samples->getReadPointer(channel, 0), target_sample_count, 1.0f);
+			}
+		}
+
+		// Clean up
+		delete source_samples;
+
+		// Set previous location
+		previous_location = location;
 	}
 }
 
@@ -706,23 +781,58 @@ int64_t Clip::adjust_frame_number_minimum(int64_t frame_number)
 }
 
 // Get or generate a blank frame
-std::shared_ptr<Frame> Clip::GetOrCreateFrame(int64_t number)
+std::shared_ptr<Frame> Clip::GetOrCreateFrame(int64_t number, bool enable_time)
 {
 	try {
+		// Init to requested frame
+		int64_t clip_frame_number = adjust_frame_number_minimum(number);
+		bool is_increasing = true;
+
+		// Adjust for time-mapping (if any)
+		if (enable_time && time.GetLength() > 1) {
+			is_increasing = time.IsIncreasing(clip_frame_number + 1);
+			const int64_t time_frame_number = adjust_frame_number_minimum(time.GetLong(clip_frame_number));
+			if (auto *fm = dynamic_cast<FrameMapper*>(reader)) {
+				// Inform FrameMapper which direction this mapper frame is being requested
+				fm->SetDirectionHint(is_increasing);
+			}
+			clip_frame_number = time_frame_number;
+		}
+
 		// Debug output
-		ZmqLogger::Instance()->AppendDebugMethod("Clip::GetOrCreateFrame (from reader)", "number", number);
+		Logger::Instance()->AppendDebugMethod(
+				"Clip::GetOrCreateFrame (from reader)",
+				"number", number, "clip_frame_number", clip_frame_number);
 
 		// Attempt to get a frame (but this could fail if a reader has just been closed)
-		auto reader_frame = reader->GetFrame(number);
-
-		// Return real frame
+		if (reader->info.has_single_image) gpu_metrics::Record(gpu_metrics::ImageSource);
+		auto reader_frame = reader->GetFrame(clip_frame_number);
 		if (reader_frame) {
+            source_raster_size = QSize(reader_frame->GetWidth(), reader_frame->GetHeight());
+			// Override frame # (due to time-mapping might change it)
+			reader_frame->number = number;
+			reader_frame->SetAudioDirection(is_increasing);
+
+			// Return real frame
 			// Create a new copy of reader frame
 			// This allows a clip to modify the pixels and audio of this frame without
 			// changing the underlying reader's frame data
 			auto reader_copy = std::make_shared<Frame>(*reader_frame.get());
-			reader_copy->SampleRate(reader_frame->SampleRate());
-			reader_copy->ChannelsLayout(reader_frame->ChannelsLayout());
+			if (has_video.GetInt(number) == 0) {
+				// No video, so add transparent pixels
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+                bool cleared=false;
+                if(VulkanRenderingEnabled()) try {
+                    reader_copy->AddDeferredImage(SolidVulkanImage(reader_copy->GetWidth(),reader_copy->GetHeight(),Qt::transparent));cleared=true;
+                } catch(const std::exception& error) {Logger::Instance()->Log(std::string("Vulkan disabled-video CPU fallback: ")+error.what());}
+                if(!cleared)
+#endif
+                reader_copy->AddColor(QColor(Qt::transparent));
+			}
+			if (has_audio.GetInt(number) == 0 || number > reader->info.video_length) {
+				// No audio, so include silence (also, mute audio if past end of reader)
+				reader_copy->AddAudioSilence(reader_copy->GetAudioSamplesCount());
+			}
 			return reader_copy;
 		}
 
@@ -736,7 +846,10 @@ std::shared_ptr<Frame> Clip::GetOrCreateFrame(int64_t number)
 	int estimated_samples_in_frame = Frame::GetSamplesPerFrame(number, reader->info.fps, reader->info.sample_rate, reader->info.channels);
 
 	// Debug output
-	ZmqLogger::Instance()->AppendDebugMethod("Clip::GetOrCreateFrame (create blank)", "number", number, "estimated_samples_in_frame", estimated_samples_in_frame);
+	Logger::Instance()->AppendDebugMethod(
+		"Clip::GetOrCreateFrame (create blank)",
+		"number", number,
+		"estimated_samples_in_frame", estimated_samples_in_frame);
 
 	// Create blank frame
 	auto new_frame = std::make_shared<Frame>(
@@ -770,12 +883,11 @@ std::string Clip::PropertiesJSON(int64_t requested_frame) const {
 	root["scale"] = add_property_json("Scale", scale, "int", "", NULL, 0, 3, false, requested_frame);
 	root["display"] = add_property_json("Frame Number", display, "int", "", NULL, 0, 3, false, requested_frame);
 	root["mixing"] = add_property_json("Volume Mixing", mixing, "int", "", NULL, 0, 2, false, requested_frame);
+	root["composite"] = add_property_json("Composite", composite, "int", "", NULL, 0, composite_choices_count - 1, false, requested_frame);
 	root["waveform"] = add_property_json("Waveform", waveform, "int", "", NULL, 0, 1, false, requested_frame);
-	if (!parentObjectId.empty()) {
-		root["parentObjectId"] = add_property_json("Parent", 0.0, "string", parentObjectId, NULL, -1, -1, false, requested_frame);
-	} else {
-		root["parentObjectId"] = add_property_json("Parent", 0.0, "string", "", NULL, -1, -1, false, requested_frame);
-	}
+	root["waveform_mode"] = add_property_json("Waveform Mode", waveform_mode, "int", "", NULL, 0, AUDIO_VISUALIZATION_RADIAL_BARS, false, requested_frame);
+	root["parentObjectId"] = add_property_json("Parent", 0.0, "string", parentObjectId, NULL, -1, -1, false, requested_frame);
+
 	// Add gravity choices (dropdown style)
 	root["gravity"]["choices"].append(add_property_choice_json("Top Left", GRAVITY_TOP_LEFT, gravity));
 	root["gravity"]["choices"].append(add_property_choice_json("Top Center", GRAVITY_TOP, gravity));
@@ -804,42 +916,27 @@ std::string Clip::PropertiesJSON(int64_t requested_frame) const {
 	root["mixing"]["choices"].append(add_property_choice_json("Average", VOLUME_MIX_AVERAGE, mixing));
 	root["mixing"]["choices"].append(add_property_choice_json("Reduce", VOLUME_MIX_REDUCE, mixing));
 
+	// Add composite choices (dropdown style)
+	for (int i = 0; i < composite_choices_count; ++i)
+		root["composite"]["choices"].append(add_property_choice_json(composite_choices[i].name, composite_choices[i].value, composite));
+
 	// Add waveform choices (dropdown style)
 	root["waveform"]["choices"].append(add_property_choice_json("Yes", true, waveform));
 	root["waveform"]["choices"].append(add_property_choice_json("No", false, waveform));
-	
-	// Add the parentTrackedObject's properties
-	if (parentTrackedObject)
-	{	
-		// Convert Clip's frame position to Timeline's frame position
-		long clip_start_position = round(Position() * info.fps.ToDouble()) + 1;
-		long clip_start_frame = (Start() * info.fps.ToDouble()) + 1;
-		double timeline_frame_number = requested_frame + clip_start_position - clip_start_frame;
 
-		// Get attached object's parent clip properties
-		std::map< std::string, float > trackedObjectParentClipProperties = parentTrackedObject->GetParentClipProperties(timeline_frame_number);
-		double parentObject_frame_number = trackedObjectParentClipProperties["frame_number"];
-		// Get attached object properties
-		std::map< std::string, float > trackedObjectProperties = parentTrackedObject->GetBoxValues(parentObject_frame_number);
-		
-		// Correct the parent Tracked Object properties by the clip's reference system
-		float parentObject_location_x = trackedObjectProperties["cx"] - 0.5 + trackedObjectParentClipProperties["cx"];
-		float parentObject_location_y = trackedObjectProperties["cy"] - 0.5 + trackedObjectParentClipProperties["cy"];
-		float parentObject_scale_x = trackedObjectProperties["w"]*trackedObjectProperties["sx"];
-		float parentObject_scale_y = trackedObjectProperties["h"]*trackedObjectProperties["sy"];
-		float parentObject_rotation = trackedObjectProperties["r"] + trackedObjectParentClipProperties["r"];
+	// Add waveform mode choices (dropdown style)
+	root["waveform_mode"]["choices"].append(add_property_choice_json("Waveform", AUDIO_VISUALIZATION_WAVEFORM, waveform_mode));
+	root["waveform_mode"]["choices"].append(add_property_choice_json("Filled Waveform", AUDIO_VISUALIZATION_FILLED_WAVEFORM, waveform_mode));
+	root["waveform_mode"]["choices"].append(add_property_choice_json("Bars", AUDIO_VISUALIZATION_BARS, waveform_mode));
+	root["waveform_mode"]["choices"].append(add_property_choice_json("Radial", AUDIO_VISUALIZATION_RADIAL, waveform_mode));
+	root["waveform_mode"]["choices"].append(add_property_choice_json("Radial Bars", AUDIO_VISUALIZATION_RADIAL_BARS, waveform_mode));
+	root["waveform_mode"]["choices"].append(add_property_choice_json("Spectrum", AUDIO_VISUALIZATION_SPECTRUM, waveform_mode));
+	root["waveform_mode"]["choices"].append(add_property_choice_json("Phase Scope", AUDIO_VISUALIZATION_PHASE_SCOPE, waveform_mode));
+	root["waveform_mode"]["choices"].append(add_property_choice_json("Particles", AUDIO_VISUALIZATION_PARTICLES, waveform_mode));
+	root["waveform_mode"]["choices"].append(add_property_choice_json("VU Meter", AUDIO_VISUALIZATION_VU_METER, waveform_mode));
 
-		// Add the parent Tracked Object properties to JSON
-		root["location_x"] = add_property_json("Location X", parentObject_location_x, "float", "", &location_x, -1.0, 1.0, false, requested_frame);
-		root["location_y"] = add_property_json("Location Y", parentObject_location_y, "float", "", &location_y, -1.0, 1.0, false, requested_frame);
-		root["scale_x"] = add_property_json("Scale X", parentObject_scale_x, "float", "", &scale_x, 0.0, 1.0, false, requested_frame);
-		root["scale_y"] = add_property_json("Scale Y", parentObject_scale_y, "float", "", &scale_y, 0.0, 1.0, false, requested_frame);
-		root["rotation"] = add_property_json("Rotation", parentObject_rotation, "float", "", &rotation, -360, 360, false, requested_frame);
-		root["shear_x"] = add_property_json("Shear X", shear_x.GetValue(requested_frame), "float", "", &shear_x, -1.0, 1.0, false, requested_frame);
-		root["shear_y"] = add_property_json("Shear Y", shear_y.GetValue(requested_frame), "float", "", &shear_y, -1.0, 1.0, false, requested_frame);
-	}
-	// Add the parentClipObject's properties
-	else if (parentClipObject)
+	// Add the current parent clip's properties
+	if (GetAttachedClip())
 	{
 		// Convert Clip's frame position to Timeline's frame position
 		long clip_start_position = round(Position() * info.fps.ToDouble()) + 1;
@@ -847,7 +944,7 @@ std::string Clip::PropertiesJSON(int64_t requested_frame) const {
 		double timeline_frame_number = requested_frame + clip_start_position - clip_start_frame;
 
 		// Correct the parent Clip Object properties by the clip's reference system
-		float parentObject_location_x = parentClipObject->location_x.GetValue(timeline_frame_number); 
+		float parentObject_location_x = parentClipObject->location_x.GetValue(timeline_frame_number);
 		float parentObject_location_y = parentClipObject->location_y.GetValue(timeline_frame_number);
 		float parentObject_scale_x = parentClipObject->scale_x.GetValue(timeline_frame_number);
 		float parentObject_scale_y = parentClipObject->scale_y.GetValue(timeline_frame_number);
@@ -878,6 +975,8 @@ std::string Clip::PropertiesJSON(int64_t requested_frame) const {
 
 	// Keyframes
 	root["alpha"] = add_property_json("Alpha", alpha.GetValue(requested_frame), "float", "", &alpha, 0.0, 1.0, false, requested_frame);
+	root["corner_radius"] = add_property_json("Corner Radius", corner_radius.GetValue(requested_frame), "float", "", &corner_radius, 0.0, 0.5, false, requested_frame);
+	root["margin"] = add_property_json("Margin", margin.GetValue(requested_frame), "float", "", &margin, 0.0, 0.5, false, requested_frame);
 	root["origin_x"] = add_property_json("Origin X", origin_x.GetValue(requested_frame), "float", "", &origin_x, 0.0, 1.0, false, requested_frame);
 	root["origin_y"] = add_property_json("Origin Y", origin_y.GetValue(requested_frame), "float", "", &origin_y, 0.0, 1.0, false, requested_frame);
 	root["volume"] = add_property_json("Volume", volume.GetValue(requested_frame), "float", "", &volume, 0.0, 1.0, false, requested_frame);
@@ -899,7 +998,7 @@ std::string Clip::PropertiesJSON(int64_t requested_frame) const {
 	root["wave_color"]["red"] = add_property_json("Red", wave_color.red.GetValue(requested_frame), "float", "", &wave_color.red, 0, 255, false, requested_frame);
 	root["wave_color"]["blue"] = add_property_json("Blue", wave_color.blue.GetValue(requested_frame), "float", "", &wave_color.blue, 0, 255, false, requested_frame);
 	root["wave_color"]["green"] = add_property_json("Green", wave_color.green.GetValue(requested_frame), "float", "", &wave_color.green, 0, 255, false, requested_frame);
-
+	root["wave_color"]["alpha"] = add_property_json("Alpha", wave_color.alpha.GetValue(requested_frame), "float", "", &wave_color.alpha, 0, 255, false, requested_frame);
 
 	// Return formatted string
 	return root.toStyledString();
@@ -913,15 +1012,30 @@ Json::Value Clip::JsonValue() const {
 	root["parentObjectId"] = parentObjectId;
 	root["gravity"] = gravity;
 	root["scale"] = scale;
+	root["location_coordinate_system"] = location_coordinate_system;
+	root["scale_none_legacy"] = scale_none_legacy;
 	root["anchor"] = anchor;
 	root["display"] = display;
 	root["mixing"] = mixing;
+	root["composite"] = composite;
 	root["waveform"] = waveform;
+	root["waveform_mode"] = waveform_mode;
+	switch (reader_orientation_mode) {
+		case ReaderOrientationMode::LegacyClipTransform:
+			root["reader_orientation_mode"] = "legacy_clip_transform";
+			break;
+		case ReaderOrientationMode::Reader:
+		default:
+			root["reader_orientation_mode"] = "reader";
+			break;
+	}
 	root["scale_x"] = scale_x.JsonValue();
 	root["scale_y"] = scale_y.JsonValue();
 	root["location_x"] = location_x.JsonValue();
 	root["location_y"] = location_y.JsonValue();
 	root["alpha"] = alpha.JsonValue();
+	root["corner_radius"] = corner_radius.JsonValue();
+	root["margin"] = margin.JsonValue();
 	root["rotation"] = rotation.JsonValue();
 	root["time"] = time.JsonValue();
 	root["volume"] = volume.JsonValue();
@@ -967,9 +1081,9 @@ void Clip::SetJson(const std::string value) {
 	// Parse JSON string into JSON objects
 	try
 	{
-		const Json::Value root = openshot::stringToJson(value);
+		Json::Value root = openshot::stringToJson(value);
 		// Set all values that match
-		SetJsonValue(root);
+		SetJsonValue(std::move(root));
 	}
 	catch (const std::exception& e)
 	{
@@ -979,10 +1093,28 @@ void Clip::SetJson(const std::string value) {
 }
 
 // Load Json::Value into this object
-void Clip::SetJsonValue(const Json::Value root) {
+void Clip::SetJsonValue(Json::Value root) {
+	auto ensure_default_keyframe = [](Keyframe& kf, double default_value) {
+		if (kf.GetCount() == 0) {
+			kf = Keyframe(default_value);
+		}
+	};
 
 	// Set parent data
-	ClipBase::SetJsonValue(root);
+	SetBaseJsonValue(root);
+
+	// Older project files predate reader-applied orientation metadata and stored
+	// phone/camera rotation as ordinary clip rotation/scale keyframes.
+	if (root["reader_orientation_mode"].isNull()) {
+		reader_orientation_mode = ReaderOrientationMode::LegacyClipTransform;
+	} else {
+		const std::string mode = root["reader_orientation_mode"].asString();
+		if (mode == "legacy_clip_transform") {
+			reader_orientation_mode = ReaderOrientationMode::LegacyClipTransform;
+		} else {
+			reader_orientation_mode = ReaderOrientationMode::Reader;
+		}
+	}
 
 	// Set data from Json (if key is found)
 	if (!root["parentObjectId"].isNull()){
@@ -998,78 +1130,112 @@ void Clip::SetJsonValue(const Json::Value root) {
 		gravity = (GravityType) root["gravity"].asInt();
 	if (!root["scale"].isNull())
 		scale = (ScaleType) root["scale"].asInt();
+	if (!root["location_coordinate_system"].isNull()) {
+		const auto& coordinates = root["location_coordinate_system"];
+		location_coordinate_system = coordinates.isString() ? coordinates.asString() : "auto";
+		if (location_coordinate_system != "canvas" && location_coordinate_system != "geometry")
+			location_coordinate_system = "auto";
+	}
+	if (root["scale_none_legacy"].isBool())
+		scale_none_legacy = root["scale_none_legacy"].asBool();
 	if (!root["anchor"].isNull())
 		anchor = (AnchorType) root["anchor"].asInt();
 	if (!root["display"].isNull())
 		display = (FrameDisplayType) root["display"].asInt();
 	if (!root["mixing"].isNull())
 		mixing = (VolumeMixType) root["mixing"].asInt();
+	if (!root["composite"].isNull())
+		composite = (CompositeType) root["composite"].asInt();
 	if (!root["waveform"].isNull())
 		waveform = root["waveform"].asBool();
+	if (!root["waveform_mode"].isNull())
+		waveform_mode = root["waveform_mode"].asInt();
 	if (!root["scale_x"].isNull())
-		scale_x.SetJsonValue(root["scale_x"]);
+		scale_x.SetJsonValue(std::move(root["scale_x"]));
 	if (!root["scale_y"].isNull())
-		scale_y.SetJsonValue(root["scale_y"]);
+		scale_y.SetJsonValue(std::move(root["scale_y"]));
 	if (!root["location_x"].isNull())
-		location_x.SetJsonValue(root["location_x"]);
+		location_x.SetJsonValue(std::move(root["location_x"]));
 	if (!root["location_y"].isNull())
-		location_y.SetJsonValue(root["location_y"]);
+		location_y.SetJsonValue(std::move(root["location_y"]));
 	if (!root["alpha"].isNull())
-		alpha.SetJsonValue(root["alpha"]);
+		alpha.SetJsonValue(std::move(root["alpha"]));
+	if (!root["corner_radius"].isNull())
+		corner_radius.SetJsonValue(std::move(root["corner_radius"]));
+	if (!root["margin"].isNull())
+		margin.SetJsonValue(std::move(root["margin"]));
 	if (!root["rotation"].isNull())
-		rotation.SetJsonValue(root["rotation"]);
+		rotation.SetJsonValue(std::move(root["rotation"]));
 	if (!root["time"].isNull())
-		time.SetJsonValue(root["time"]);
+		time.SetJsonValue(std::move(root["time"]));
 	if (!root["volume"].isNull())
-		volume.SetJsonValue(root["volume"]);
+		volume.SetJsonValue(std::move(root["volume"]));
 	if (!root["wave_color"].isNull())
-		wave_color.SetJsonValue(root["wave_color"]);
+		wave_color.SetJsonValue(std::move(root["wave_color"]));
 	if (!root["shear_x"].isNull())
-		shear_x.SetJsonValue(root["shear_x"]);
+		shear_x.SetJsonValue(std::move(root["shear_x"]));
 	if (!root["shear_y"].isNull())
-		shear_y.SetJsonValue(root["shear_y"]);
+		shear_y.SetJsonValue(std::move(root["shear_y"]));
 	if (!root["origin_x"].isNull())
-		origin_x.SetJsonValue(root["origin_x"]);
+		origin_x.SetJsonValue(std::move(root["origin_x"]));
 	if (!root["origin_y"].isNull())
-		origin_y.SetJsonValue(root["origin_y"]);
+		origin_y.SetJsonValue(std::move(root["origin_y"]));
 	if (!root["channel_filter"].isNull())
-		channel_filter.SetJsonValue(root["channel_filter"]);
+		channel_filter.SetJsonValue(std::move(root["channel_filter"]));
 	if (!root["channel_mapping"].isNull())
-		channel_mapping.SetJsonValue(root["channel_mapping"]);
+		channel_mapping.SetJsonValue(std::move(root["channel_mapping"]));
 	if (!root["has_audio"].isNull())
-		has_audio.SetJsonValue(root["has_audio"]);
+		has_audio.SetJsonValue(std::move(root["has_audio"]));
 	if (!root["has_video"].isNull())
-		has_video.SetJsonValue(root["has_video"]);
+		has_video.SetJsonValue(std::move(root["has_video"]));
 	if (!root["perspective_c1_x"].isNull())
-		perspective_c1_x.SetJsonValue(root["perspective_c1_x"]);
+		perspective_c1_x.SetJsonValue(std::move(root["perspective_c1_x"]));
 	if (!root["perspective_c1_y"].isNull())
-		perspective_c1_y.SetJsonValue(root["perspective_c1_y"]);
+		perspective_c1_y.SetJsonValue(std::move(root["perspective_c1_y"]));
 	if (!root["perspective_c2_x"].isNull())
-		perspective_c2_x.SetJsonValue(root["perspective_c2_x"]);
+		perspective_c2_x.SetJsonValue(std::move(root["perspective_c2_x"]));
 	if (!root["perspective_c2_y"].isNull())
-		perspective_c2_y.SetJsonValue(root["perspective_c2_y"]);
+		perspective_c2_y.SetJsonValue(std::move(root["perspective_c2_y"]));
 	if (!root["perspective_c3_x"].isNull())
-		perspective_c3_x.SetJsonValue(root["perspective_c3_x"]);
+		perspective_c3_x.SetJsonValue(std::move(root["perspective_c3_x"]));
 	if (!root["perspective_c3_y"].isNull())
-		perspective_c3_y.SetJsonValue(root["perspective_c3_y"]);
+		perspective_c3_y.SetJsonValue(std::move(root["perspective_c3_y"]));
 	if (!root["perspective_c4_x"].isNull())
-		perspective_c4_x.SetJsonValue(root["perspective_c4_x"]);
+		perspective_c4_x.SetJsonValue(std::move(root["perspective_c4_x"]));
 	if (!root["perspective_c4_y"].isNull())
-		perspective_c4_y.SetJsonValue(root["perspective_c4_y"]);
+		perspective_c4_y.SetJsonValue(std::move(root["perspective_c4_y"]));
+
+	// Core clip transforms should never remain empty after load. Empty JSON
+	// point arrays can be produced by editing flows that remove every keyframe.
+	ensure_default_keyframe(scale_x, 1.0);
+	ensure_default_keyframe(scale_y, 1.0);
+	ensure_default_keyframe(location_x, 0.0);
+	ensure_default_keyframe(location_y, 0.0);
+	ensure_default_keyframe(origin_x, 0.5);
+	ensure_default_keyframe(origin_y, 0.5);
+	ensure_default_keyframe(rotation, 0.0);
+	ensure_default_keyframe(corner_radius, 0.0);
+	ensure_default_keyframe(margin, 0.0);
 	if (!root["effects"].isNull()) {
 
-		// Clear existing effects
-		effects.clear();
+		// Detach old effects and their tracked parents before loading replacements.
+		while (!effects.empty())
+			RemoveEffect(effects.front());
 
 		// loop through effects
 		for (const auto existing_effect : root["effects"]) {
+			// Skip NULL nodes
+			if (existing_effect.isNull()) {
+				continue;
+			}
+
 			// Create Effect
 			EffectBase *e = NULL;
 			if (!existing_effect["type"].isNull()) {
 
 				// Create instance of effect
 				if ( (e = EffectInfo().CreateEffect(existing_effect["type"].asString()))) {
-					
+
 					// Load Json into Effect
 					e->SetJsonValue(existing_effect);
 
@@ -1090,10 +1256,8 @@ void Clip::SetJsonValue(const Json::Value root) {
 				// Track if reader was open
 				already_open = reader->IsOpen();
 
-				// Close and delete existing reader (if any)
-				reader->Close();
-				delete reader;
-				reader = NULL;
+				// Close and delete existing allocated reader (if any)
+				Reader(NULL);
 			}
 
 			// Create new reader (and load properties)
@@ -1104,6 +1268,10 @@ void Clip::SetJsonValue(const Json::Value root) {
 				// Create new reader
 				reader = new openshot::FFmpegReader(root["reader"]["path"].asString(), false);
 				reader->SetJsonValue(root["reader"]);
+
+			} else if (type == "QtTextReader") {
+                reader = new openshot::QtTextReader();
+                reader->SetJsonValue(root["reader"]);
 
 			} else if (type == "QtImageReader") {
 
@@ -1146,16 +1314,20 @@ void Clip::SetJsonValue(const Json::Value root) {
 
 			// mark as managed reader and set parent
 			if (reader) {
+				reader->ApplyOrientationMetadata(reader_orientation_mode == ReaderOrientationMode::Reader);
 				reader->ParentClip(this);
 				allocated_reader = reader;
 			}
 
 			// Re-Open reader (if needed)
-			if (already_open)
+			if (already_open) {
 				reader->Open();
-
+			}
 		}
 	}
+
+	// Clear cache (it might have changed)
+	final_cache.Clear();
 }
 
 // Sort effects by order
@@ -1178,12 +1350,12 @@ void Clip::AddEffect(EffectBase* effect)
 	sort_effects();
 
 	// Get the parent timeline of this clip
-	Timeline* parentTimeline = (Timeline *) ParentTimeline();
+	Timeline* parentTimeline = static_cast<Timeline *>(ParentTimeline());
 
 	if (parentTimeline)
 		effect->ParentTimeline(parentTimeline);
 
-    #ifdef USE_OPENCV
+	#ifdef USE_OPENCV
 	// Add Tracked Object to Timeline
 	if (effect->info.has_tracked_object){
 
@@ -1194,7 +1366,7 @@ void Clip::AddEffect(EffectBase* effect)
 
 			// Iterate through effect's vector of Tracked Objects
 			for (auto const& trackedObject : effect->trackedObjects){
-				
+
 				// Cast the Tracked Object as TrackedObjectBBox
 				std::shared_ptr<TrackedObjectBBox> trackedObjectBBox = std::static_pointer_cast<TrackedObjectBBox>(trackedObject.second);
 
@@ -1203,190 +1375,630 @@ void Clip::AddEffect(EffectBase* effect)
 
 				// Add the Tracked Object to the timeline
 				parentTimeline->AddTrackedObject(trackedObjectBBox);
-			}	
+			}
 		}
 	}
-    #endif
+	#endif
 
-	// Clear cache
-	cache.Clear();
+	// Clear cache (it might have changed)
+	final_cache.Clear();
 }
 
 // Remove an effect from the clip
 void Clip::RemoveEffect(EffectBase* effect)
 {
+	if (std::find(effects.begin(), effects.end(), effect) == effects.end())
+		return;
 	effects.remove(effect);
+	for (const auto& entry : effect->trackedObjects) {
+		if (entry.second)
+			entry.second->ParentClip(nullptr);
+	}
+	effect->ParentClip(nullptr);
+	effect->ParentTimeline(nullptr);
+	if (auto parent_timeline = static_cast<Timeline*>(ParentTimeline())) {
+		parent_timeline->GetTrackedObjectsIds();
+		for (auto child : parent_timeline->Clips())
+			child->AttachToObject(child->GetAttachedId());
+		parent_timeline->ClearAllCache();
+	}
+
+	// Clear cache (it might have changed)
+	final_cache.Clear();
+}
+
+// Apply background image to the current clip image (i.e. flatten this image onto previous layer)
+void Clip::apply_background(std::shared_ptr<openshot::Frame> frame,
+                            std::shared_ptr<openshot::Frame> background_frame,
+                            bool update_frame_image) {
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+	// Audio-only frames contribute audio in Timeline::add_layer, but have no
+	// image to composite. Do not materialize the GPU canvas for an empty layer.
+	if (!frame->has_image_data) {
+		if (update_frame_image) {
+			if (auto background = background_frame->GetDeferredImage()) frame->AddDeferredImage(background);
+			else frame->AddImage(background_frame->GetImage());
+		}
+		return;
+	}
+	if (composite >= COMPOSITE_SOURCE_OVER && composite <= COMPOSITE_LAST) {
+		auto source = frame->GetDeferredImage();
+		auto background = background_frame->GetDeferredImage();
+		QColor clear;
+		if (std::dynamic_pointer_cast<const VulkanFrameImage>(source) &&
+			(std::dynamic_pointer_cast<const VulkanFrameImage>(background) || background_frame->GetBlankColor(clear))) {
+			try {
+				auto result = composite==COMPOSITE_SOURCE_OVER
+                    ? RenderVulkanImage(source,background,background_frame->GetWidth(),background_frame->GetHeight(),QTransform(),1.0,clear)
+                    : CompositeVulkanImage(source,background,composite,clear);
+				gpu_metrics::Record(gpu_metrics::RenderGpu);
+				background_frame->AddDeferredImage(result);
+				if (update_frame_image) frame->AddDeferredImage(result);
+				return;
+			} catch (const std::exception& error) {
+				Logger::Instance()->Log(std::string("Vulkan composite CPU fallback: ") + error.what());
+			}
+		}
+	}
+#endif
+	gpu_metrics::Record(gpu_metrics::RenderCpu);
+	gpu_metrics::Reason gpu_reason("Composite");
+	// Add background canvas
+	std::shared_ptr<QImage> background_canvas = background_frame->GetImage();
+	QPainter painter(background_canvas.get());
+
+	// Composite a new layer onto the image
+	painter.setCompositionMode(static_cast<QPainter::CompositionMode>(composite));
+	painter.drawImage(0, 0, *frame->GetImage());
+	painter.end();
+
+	// Standalone clip requests update frame->image, but timeline composition
+	// draws onto the timeline-owned background frame only.
+	if (update_frame_image)
+		frame->AddImage(background_canvas);
 }
 
 // Apply effects to the source frame (if any)
-void Clip::apply_effects(std::shared_ptr<Frame> frame)
+void Clip::apply_effects(std::shared_ptr<Frame> frame, int64_t timeline_frame_number, TimelineInfoStruct* options, bool before_keyframes)
 {
-	// Find Effects at this position and layer
 	for (auto effect : effects)
 	{
 		// Apply the effect to this frame
-		frame = effect->GetFrame(frame, frame->number);
+		if (effect->info.apply_before_clip && before_keyframes) {
+			gpu_metrics::Reason gpu_reason("Effect");
+			effect->ProcessFrame(frame, frame->number);
+			if (effect->info.has_video) gpu_metrics::RecordRender(*frame);
+		} else if (!effect->info.apply_before_clip && !before_keyframes) {
+			gpu_metrics::Reason gpu_reason("Effect");
+			effect->ProcessFrame(frame, frame->number);
+			if (effect->info.has_video) gpu_metrics::RecordRender(*frame);
+		}
+	}
 
-	} // end effect loop
+	if (timeline != NULL && options != NULL) {
+		// Apply global timeline effects (i.e. transitions & masks... if any)
+		Timeline* timeline_instance = static_cast<Timeline*>(timeline);
+		options->is_before_clip_keyframes = before_keyframes;
+		timeline_instance->apply_effects(frame, timeline_frame_number, Layer(), options);
+	}
+}
+
+// Describe just the upstream audio graph. Video edits do not reset audio DSP.
+Json::Value Clip::AudioContextJson(const EffectBase* stop) const
+{
+    Json::Value root;
+    root["reader"] = reader ? reader->JsonValue() : Json::Value();
+    root["reader_address"] = std::to_string(reinterpret_cast<uintptr_t>(reader));
+    root["time"] = time.JsonValue();
+    root["has_audio"] = has_audio.JsonValue();
+    root["start"] = Start();
+    root["end"] = End();
+    root["position"] = Position();
+    root["effects"] = Json::Value(Json::arrayValue);
+    // Match the two passes in GetFrame, including effects moved after transforms.
+    for (bool before : {true, false}) {
+        for (const auto* effect : effects) {
+            if (effect->info.apply_before_clip != before) continue;
+            if (effect == stop) return root;
+            if (effect->info.has_audio) root["effects"].append(effect->JsonValue());
+        }
+    }
+    return root;
+}
+
+std::unique_ptr<Clip> Clip::CreateAudioContext(const Json::Value& settings,
+    std::vector<std::unique_ptr<EffectBase>>& owned_effects) const
+{
+    auto context = std::unique_ptr<Clip>(new Clip());
+    // Do not use Reader(): it changes the reader's parent and ownership metadata.
+    context->reader = reader;
+    context->info = reader->info;
+    context->time.SetJsonValue(settings["time"]);
+    context->has_audio.SetJsonValue(settings["has_audio"]);
+    context->Start(settings["start"].asDouble());
+    context->End(settings["end"].asDouble());
+    context->Position(settings["position"].asDouble());
+    for (const auto& json : settings["effects"]) {
+        std::unique_ptr<EffectBase> effect(EffectInfo().CreateEffect(json["type"].asString()));
+        if (!effect) continue;
+        effect->SetJsonValue(json);
+        effect->ParentClip(context.get());
+        context->effects.push_back(effect.get());
+        owned_effects.push_back(std::move(effect));
+    }
+    // is_open stays false: this context must never close the borrowed reader.
+    return context;
+}
+
+std::shared_ptr<Frame> Clip::GetAudioContextFrame(int64_t number)
+{
+    auto sample_number = number;
+    if (time.GetLength() > 1)
+        sample_number = adjust_timeline_framenumber(number);
+    else if (auto* mapper = dynamic_cast<FrameMapper*>(reader))
+        sample_number = mapper->AdjustFrameNumber(number);
+    const int samples = Frame::GetSamplesPerFrame(sample_number, reader->info.fps,
+        reader->info.sample_rate, reader->info.channels);
+    const auto first = static_cast<int64_t>(std::round(Start() * reader->info.fps.ToDouble())) + 1;
+    const auto last = static_cast<int64_t>(std::round(End() * reader->info.fps.ToDouble()));
+    if (number < first || number > last) {
+        auto frame = std::make_shared<Frame>(number, samples, reader->info.channels);
+        frame->SampleRate(reader->info.sample_rate);
+        frame->AddAudioSilence(samples);
+        return frame;
+    }
+    auto frame = GetOrCreateFrame(number);
+    apply_timemapping(frame);
+    for (auto* effect : effects) effect->GetFrame(frame, number);
+    return frame;
 }
 
 // Compare 2 floating point numbers for equality
-bool Clip::isEqual(double a, double b)
+bool Clip::isNear(double a, double b)
 {
 	return fabs(a - b) < 0.000001;
 }
 
-// Apply keyframes to the source frame (if any)
-void Clip::apply_keyframes(std::shared_ptr<Frame> frame, std::shared_ptr<QImage> background_canvas) {
-    // Skip out if video was disabled or only an audio frame (no visualisation in use)
-    if (has_video.GetInt(frame->number) == 0 ||
-        (!Waveform() && !Reader()->info.has_video))
-        // Skip the rest of the image processing for performance reasons
-        return;
-
-    // Get image from clip
-    std::shared_ptr<QImage> source_image = frame->GetImage();
-
-    /* REPLACE IMAGE WITH WAVEFORM IMAGE (IF NEEDED) */
-    if (Waveform())
-    {
-        // Debug output
-        ZmqLogger::Instance()->AppendDebugMethod("Clip::get_transform (Generate Waveform Image)", "frame->number", frame->number, "Waveform()", Waveform());
-
-        // Get the color of the waveform
-        int red = wave_color.red.GetInt(frame->number);
-        int green = wave_color.green.GetInt(frame->number);
-        int blue = wave_color.blue.GetInt(frame->number);
-        int alpha = wave_color.alpha.GetInt(frame->number);
-
-        // Generate Waveform Dynamically (the size of the timeline)
-        source_image = frame->GetWaveform(background_canvas->width(), background_canvas->height(), red, green, blue, alpha);
-    }
-
-    // Size of final image
-    int width = background_canvas->width();
-    int height = background_canvas->height();
-
-    // Get transform from clip's keyframes
-    QTransform transform = get_transform(frame, width, height);
-
-    // Debug output
-    ZmqLogger::Instance()->AppendDebugMethod("Clip::ApplyKeyframes (Transform: Composite Image Layer: Prepare)", "frame->number", frame->number);
-
-    // Load timeline's new frame image into a QPainter
-    QPainter painter(background_canvas.get());
-    painter.setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform | QPainter::TextAntialiasing, true);
-
-    // Apply transform (translate, rotate, scale)
-    painter.setTransform(transform);
-
-    // Composite a new layer onto the image
-    painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
-    painter.drawImage(0, 0, *source_image);
-
-    if (timeline) {
-        Timeline *t = (Timeline *) timeline;
-
-        // Draw frame #'s on top of image (if needed)
-        if (display != FRAME_DISPLAY_NONE) {
-            std::stringstream frame_number_str;
-            switch (display) {
-                case (FRAME_DISPLAY_NONE):
-                    // This is only here to prevent unused-enum warnings
-                    break;
-
-                case (FRAME_DISPLAY_CLIP):
-                    frame_number_str << frame->number;
-                    break;
-
-                case (FRAME_DISPLAY_TIMELINE):
-                    frame_number_str << (position * t->info.fps.ToFloat()) + frame->number;
-                    break;
-
-                case (FRAME_DISPLAY_BOTH):
-                    frame_number_str << (position * t->info.fps.ToFloat()) + frame->number << " (" << frame->number << ")";
-                    break;
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+namespace {
+struct FrameNumberFont {
+    struct Glyph {int x,baseline_x,baseline_y;};
+    std::shared_ptr<const FrameImage> atlas;
+    std::map<quint32,Glyph> glyphs;
+    int tile_width=0,tile_height=0;
+    std::array<int,64> phase_start{};
+    bool subpixel=false;
+};
+std::shared_ptr<const FrameImage> FrameNumberOverlay(std::shared_ptr<const FrameImage> source,
+    const QString& text,const QTransform& matrix,int composite,int clip_width,int clip_height,double corner_radius) {
+    // Avoid integer conversion overflow for malformed/extreme keyframes. The
+    // caller retains the existing Qt fallback for unsupported geometry.
+    auto checkedPoint=[](QPointF point) {
+        if(!std::isfinite(point.x()) || !std::isfinite(point.y()) ||
+           std::abs(point.x())>1000000 || std::abs(point.y())>1000000)
+            throw std::runtime_error("Frame-number transform exceeds Vulkan geometry range");
+        return point;
+    };
+    // This small CPU device resolves the same default font/DPI as QPainter's
+    // video canvas. It never contains video pixels.
+    QImage device(1,1,QImage::Format_RGBA8888_Premultiplied);
+    QPainter probe(&device);const QFont font=probe.font();probe.end();
+    const QFontMetrics metrics(font,&device);
+    struct Cache {std::mutex mutex;std::map<QString,FrameNumberFont> fonts;};
+    // GPU assets outlive driver/plugin teardown, like the image upload cache.
+    static auto* cache=new Cache;
+    std::lock_guard<std::mutex> lock(cache->mutex);
+    const QString key=font.key()+":"+QString::number(device.logicalDpiY());
+    auto found=cache->fonts.find(key);
+    if(found==cache->fonts.end()) {
+        const QString alphabet="0123456789 ()-+.e";FrameNumberFont asset;
+        for(QChar c:alphabet){const auto bounds=metrics.boundingRect(QString(c));asset.tile_width=std::max(asset.tile_width,bounds.width()+6);asset.tile_height=std::max(asset.tile_height,bounds.height()+6);}
+        QImage atlas(asset.tile_width*alphabet.size(),asset.tile_height*64,QImage::Format_RGBA8888_Premultiplied);atlas.fill(Qt::transparent);
+        QTextLayout layout(alphabet,font,&device);layout.beginLayout();auto line=layout.createLine();line.setLineWidth(100000);layout.endLayout();
+        const auto runs=line.glyphRuns();
+        if(runs.isEmpty())throw std::runtime_error("Unable to resolve frame-number font");
+        const auto ids=runs.front().rawFont().glyphIndexesForString(alphabet);
+        QPainter painter(&atlas);painter.setRenderHint(QPainter::TextAntialiasing,true);painter.setFont(font);painter.setPen(Qt::white);
+        for(int index=0;index<alphabet.size();++index) {
+            const auto bounds=metrics.boundingRect(QString(alphabet[index]));
+            FrameNumberFont::Glyph glyph{index*asset.tile_width,3-bounds.left(),3-bounds.top()};
+            asset.glyphs[ids[index]]=glyph;
+            for(int phase=0;phase<64;++phase)painter.drawText(QPointF(glyph.x+glyph.baseline_x+phase/64.0,phase*asset.tile_height+glyph.baseline_y),QString(alphabet[index]));
+        }
+        painter.end();
+        // Observe Qt's subpixel groups through the cached masks rather than
+        // assuming a platform-specific number of font rasterization phases.
+        for(int phase=0;phase<64;++phase){
+            asset.phase_start[phase]=phase;
+            for(int previous=0;previous<phase;++previous){
+                bool equal=true;
+                for(int row=0;row<asset.tile_height && equal;++row)
+                    equal=std::memcmp(atlas.constScanLine(phase*asset.tile_height+row),atlas.constScanLine(previous*asset.tile_height+row),asset.tile_width*4)==0;
+                if(equal){asset.phase_start[phase]=asset.phase_start[previous];break;}
             }
-
-            // Draw frame number on top of image
-            painter.setPen(QColor("#ffffff"));
-            painter.drawText(20, 20, QString(frame_number_str.str().c_str()));
+            if(asset.phase_start[phase]!=0)asset.subpixel=true;
+        }
+        asset.atlas=UploadVulkanImage(atlas);
+        if(cache->fonts.size()>=8)cache->fonts.erase(cache->fonts.begin());
+        found=cache->fonts.emplace(key,std::move(asset)).first;
+    }
+    const auto& asset=found->second;
+    // Translated text retains Qt's hinted glyphs and subpixel phases.
+    // General affine transforms rasterize unhinted outlines directly on GPU.
+    const bool translated=matrix.type()<=QTransform::TxTranslate;
+    const QPointF baseline=checkedPoint(translated?matrix.map(QPointF(20,20)):QPointF(20,20));
+    if(!translated) {
+        // Qt disables glyph hinting for transformed fonts. Preserve its shaped
+        // glyph positions and rasterize those outlines on the device instead
+        // of blurring the hinted bitmap atlas through an affine transform.
+        QTextLayout layout(text,font,&device);layout.beginLayout();auto line=layout.createLine();line.setLineWidth(100000);layout.endLayout();
+        QPainterPath outlines;outlines.setFillRule(Qt::WindingFill);
+#ifdef __APPLE__
+        // CoreText uses Qt's outline fallback for rotated text. Let Qt shape
+        // and position that path, avoiding FreeType's bitmap-cache snapping.
+        outlines.addText(QPointF(20,20),font,text);
+        // Qt subdivides in font coordinates before mapping the resulting
+        // vertices. Subdividing an already rotated curve chooses different
+        // segments and changes coverage at small glyph edges.
+        const double scale=std::max(std::hypot(matrix.m11(),matrix.m12()),std::hypot(matrix.m21(),matrix.m22()));
+        const auto bounds=outlines.controlPointRect();
+        const auto edges=VulkanPathEdges(outlines,std::max(1,int(std::ceil(bounds.right()+2))),
+            std::max(1,int(std::ceil(bounds.bottom()+2))),scale>0?.25/scale:.25);
+        QPainterPath polygon;polygon.setFillRule(Qt::WindingFill);QPointF previous;bool first=true;
+        for(size_t edge=0;edge<edges.size();edge+=4){
+            const QPointF a(edges[edge],edges[edge+1]),b(edges[edge+2],edges[edge+3]);
+            if(first || previous!=a)polygon.moveTo(a);
+            polygon.lineTo(b);previous=b;first=false;
+        }
+        outlines=matrix.map(polygon);
+#else
+        for(const auto& run:line.glyphRuns()) {
+            const auto ids=run.glyphIndexes();const auto positions=run.positions();
+            for(int i=0;i<ids.size();++i){
+                const auto anchor=checkedPoint(matrix.map(QPointF(20+positions[i].x(),20+positions[i].y()-line.ascent())));
+                const int fixed=int(anchor.x()*64),phase=fixed&63;
+                const double x=double(fixed>>6)+(fixed!=0 && asset.subpixel?(asset.phase_start[phase]+1)/64.0:0.0);
+                QTransform placed(matrix.m11(),matrix.m12(),matrix.m21(),matrix.m22(),x,((int(anchor.y()*64)+32)>>6));
+                outlines.addPath(placed.map(run.rawFont().pathForGlyph(ids[i])));
+            }
+        }
+#endif
+        auto coverage=SolidVulkanImage(source->GetWidth(),source->GetHeight(),Qt::transparent);
+        coverage=PaintVulkanPath(coverage,outlines,Qt::white,.0625);
+        return PaintVulkanTextMask(source,coverage,composite,matrix,clip_width,clip_height,corner_radius);
+    }
+    const QRect bounds=metrics.boundingRect(text).translated(int(std::floor(baseline.x())),int(std::floor(baseline.y()))).adjusted(-3,-3,3,3);
+    auto coverage=SolidVulkanImage(std::max(1,bounds.width()),std::max(1,bounds.height()),Qt::transparent);
+    QTextLayout layout(text,font,&device);layout.beginLayout();auto line=layout.createLine();line.setLineWidth(100000);layout.endLayout();
+    for(const auto& run:line.glyphRuns()) {
+        const auto ids=run.glyphIndexes();const auto positions=run.positions();
+        for(int i=0;i<ids.size();++i) {
+            const auto glyph=asset.glyphs.find(ids[i]);if(glyph==asset.glyphs.end())throw std::runtime_error("Unsupported frame-number glyph");
+            const int fixed=int((baseline.x()+positions[i].x()-bounds.left())*64),phase=fixed&63;
+            const QPoint origin((fixed>>6)-glyph->second.baseline_x,qRound(baseline.y()+positions[i].y()-line.ascent()-bounds.top())-glyph->second.baseline_y);
+            coverage=PaintVulkanGlyph(coverage,asset.atlas,QRect(glyph->second.x,phase*asset.tile_height,asset.tile_width,asset.tile_height),origin,Qt::white);
         }
     }
-    painter.end();
-
-    // Add new QImage to frame
-    frame->AddImage(background_canvas);
+    auto placed=translated?QTransform():matrix;placed.translate(bounds.left(),bounds.top());
+    coverage=RenderVulkanImage(coverage,nullptr,source->GetWidth(),source->GetHeight(),placed,1.0);
+    return PaintVulkanTextMask(source,coverage,composite,matrix,clip_width,clip_height,corner_radius);
 }
+std::shared_ptr<const VulkanFrameImage> VulkanSource(const std::shared_ptr<Frame>& frame) {
+    if (!VulkanRenderingEnabled()) return {};
+    auto source = std::dynamic_pointer_cast<const VulkanFrameImage>(frame->GetDeferredImage());
+    if (source || !frame->has_image_data) return source;
+    try {
+        auto uploaded = UploadVulkanImage(*frame->GetImage());
+        frame->AddDeferredImage(uploaded);
+        return std::dynamic_pointer_cast<const VulkanFrameImage>(uploaded);
+    } catch (const std::exception& error) {
+        // Log the first failure and then every 100th, so repeats stay visible
+        // without flooding the log; the total is in VulkanUploadFailureCount().
+        RecordVulkanUploadFailure();
+        const auto failures = VulkanUploadFailureCount();
+        if (failures == 1 || failures % 100 == 0)
+            Logger::Instance()->Log("GPU image upload unavailable; using CPU (" + std::to_string(failures) +
+                                    " failures): " + error.what(), Logger::LevelWarning);
+        return {};
+    }
+}
+}
+bool Clip::apply_vulkan_layer(std::shared_ptr<Frame> frame, std::shared_ptr<Frame> background_frame, QSize timeline_size)
+{
+	if (!frame->has_image_data || composite != COMPOSITE_SOURCE_OVER || display != FRAME_DISPLAY_NONE)
+		return false;
+	// Effects applied after keyframes (and timeline transitions/masks) need the transformed layer
+	for (auto effect : effects)
+		if (!effect->info.apply_before_clip)
+			return false;
+	if (timeline && !static_cast<Timeline*>(timeline)->Effects().empty())
+		return false;
+
+	auto source = VulkanSource(frame);
+	auto background = background_frame->GetDeferredImage();
+	QColor clear;
+	if (!source || !(std::dynamic_pointer_cast<const VulkanFrameImage>(background) || background_frame->GetBlankColor(clear)))
+		return false;
+	try {
+		background_frame->AddDeferredImage(RenderVulkanImage(source, background, timeline_size.width(),
+			timeline_size.height(), get_transform(frame, timeline_size.width(), timeline_size.height()),
+			alpha.GetValue(frame->number), clear, false, corner_radius.GetValue(frame->number)));
+		gpu_metrics::Record(gpu_metrics::RenderGpu);
+		return true;
+	} catch (const std::exception& error) {
+		Logger::Instance()->Log(std::string("Vulkan layer CPU fallback: ") + error.what());
+		return false;
+	}
+}
+#endif
 
 // Apply keyframes to the source frame (if any)
+void Clip::apply_keyframes(std::shared_ptr<Frame> frame, QSize timeline_size) {
+	// Skip out if video was disabled or only an audio frame (no visualisation in use)
+	if (!frame->has_image_data) {
+		// Skip the rest of the image processing for performance reasons
+		return;
+	}
+
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+    {
+        if(auto source=VulkanSource(frame)) {
+			try {
+                const auto matrix=get_transform(frame,timeline_size.width(),timeline_size.height());
+                auto result=RenderVulkanImage(source,nullptr,timeline_size.width(),timeline_size.height(),matrix,
+                    alpha.GetValue(frame->number),Qt::transparent,false,corner_radius.GetValue(frame->number),composite);
+                if(timeline && display!=FRAME_DISPLAY_NONE) {
+                    auto* t=static_cast<Timeline*>(timeline);std::stringstream text;
+                    if(display==FRAME_DISPLAY_CLIP)text<<frame->number;
+                    else if(display==FRAME_DISPLAY_TIMELINE)text<<round((Position()-Start())*t->info.fps.ToFloat())+frame->number;
+                    else if(display==FRAME_DISPLAY_BOTH)text<<round((Position()-Start())*t->info.fps.ToFloat())+frame->number<<" ("<<frame->number<<")";
+                    result=FrameNumberOverlay(result,QString::fromStdString(text.str()),matrix,composite,source->GetWidth(),source->GetHeight(),corner_radius.GetValue(frame->number));
+                }
+                frame->AddDeferredImage(result);
+				gpu_metrics::Record(gpu_metrics::RenderGpu);
+				return;
+			} catch (const std::exception& error) {
+				Logger::Instance()->Log(std::string("Vulkan transform CPU fallback: ") + error.what());
+			}
+		}
+	}
+#endif
+
+	gpu_metrics::Record(gpu_metrics::RenderCpu);
+	gpu_metrics::Reason gpu_reason("Transform");
+	// Get image from clip, and create transparent background image
+	std::shared_ptr<QImage> source_image = frame->GetImage();
+	std::shared_ptr<QImage> background_canvas = std::make_shared<QImage>(timeline_size.width(),
+                                                                         timeline_size.height(),
+																		 QImage::Format_RGBA8888_Premultiplied);
+	background_canvas->fill(QColor(Qt::transparent));
+
+	// Get transform from clip's keyframes
+	QTransform transform = get_transform(frame, background_canvas->width(), background_canvas->height());
+
+	// Load timeline's new frame image into a QPainter
+	QPainter painter(background_canvas.get());
+	painter.setRenderHint(QPainter::TextAntialiasing, true);
+	if (!transform.isIdentity()) {
+		painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+	}
+	// Apply transform (translate, rotate, scale)
+	painter.setTransform(transform);
+
+	// Composite a new layer onto the image
+	painter.setCompositionMode(static_cast<QPainter::CompositionMode>(composite));
+
+	// Apply opacity via painter instead of per-pixel alpha manipulation
+	const float alpha_value = alpha.GetValue(frame->number);
+	const double corner_radius_value = std::max(0.0, std::min(0.5, corner_radius.GetValue(frame->number)));
+	if (corner_radius_value > 0.0f) {
+		painter.setRenderHint(QPainter::Antialiasing, true);
+		const double radius_pixels = corner_radius_value
+			* std::min(source_image->width(), source_image->height());
+		QPainterPath clip_path;
+		clip_path.addRoundedRect(
+			QRectF(0, 0, source_image->width(), source_image->height()),
+			radius_pixels,
+			radius_pixels);
+		painter.setClipPath(clip_path);
+	}
+	if (alpha_value != 1.0f) {
+		painter.setOpacity(alpha_value);
+		painter.drawImage(0, 0, *source_image);
+		// Reset so any subsequent drawing (e.g., overlays) isn’t faded
+		painter.setOpacity(1.0);
+	} else {
+		painter.drawImage(0, 0, *source_image);
+	}
+
+	if (timeline) {
+		Timeline *t = static_cast<Timeline *>(timeline);
+
+		// Draw frame #'s on top of image (if needed)
+		if (display != FRAME_DISPLAY_NONE) {
+			std::stringstream frame_number_str;
+			switch (display) {
+				case (FRAME_DISPLAY_NONE):
+					// This is only here to prevent unused-enum warnings
+					break;
+
+				case (FRAME_DISPLAY_CLIP):
+					frame_number_str << frame->number;
+					break;
+
+				case (FRAME_DISPLAY_TIMELINE):
+					frame_number_str << round((Position() - Start()) * t->info.fps.ToFloat()) + frame->number;
+					break;
+
+				case (FRAME_DISPLAY_BOTH):
+					frame_number_str << round((Position() - Start()) * t->info.fps.ToFloat()) + frame->number << " (" << frame->number << ")";
+					break;
+			}
+
+			// Draw frame number on top of image
+			painter.setPen(QColor("#ffffff"));
+			painter.drawText(20, 20, QString(frame_number_str.str().c_str()));
+		}
+	}
+	painter.end();
+
+	// Add new QImage to frame
+	frame->AddImage(background_canvas);
+}
+
+// Apply apply_waveform image to the source frame (if any)
+void Clip::apply_waveform(std::shared_ptr<Frame> frame, QSize timeline_size) {
+
+	if (!Waveform()) {
+		// Exit if no waveform is needed
+		return;
+	}
+
+	// Debug output
+	Logger::Instance()->AppendDebugMethod("Clip::apply_waveform (Generate Waveform Image)",
+			"frame->number", frame->number,
+			"Waveform()", Waveform(),
+			"width", timeline_size.width(),
+			"height", timeline_size.height());
+
+	// Get the color of the waveform
+	int red = wave_color.red.GetInt(frame->number);
+	int green = wave_color.green.GetInt(frame->number);
+	int blue = wave_color.blue.GetInt(frame->number);
+	int alpha = wave_color.alpha.GetInt(frame->number);
+
+    // Render at the final displayed resolution, but hold the old raster size
+    // throughout a preview drag. Decoded audio remains cached in the mapper.
+    auto* parent_timeline = static_cast<Timeline*>(ParentTimeline());
+    const bool transforming = parent_timeline && parent_timeline->IsClipTransforming(Id());
+    if (transforming && waveform_frame == frame->number) {
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+        if (VulkanRenderingEnabled() && waveform_surface) {
+            frame->AddDeferredImage(waveform_surface);
+            return;
+        }
+#endif
+        if (waveform_raster) {
+            frame->AddImage(std::make_shared<QImage>(*waveform_raster));
+            return;
+        }
+    }
+    if (!transforming) {
+        const double maximum = std::max({1.0, double(scale_x.GetMaxPoint().co.Y), double(scale_y.GetMaxPoint().co.Y)});
+        waveform_detail = std::min(maximum, std::max(1.0, 8192.0 / std::max(timeline_size.width(), timeline_size.height())));
+    }
+    const QSize raster_size(std::max(1, int(std::round(timeline_size.width() * waveform_detail))),
+                            std::max(1, int(std::round(timeline_size.height() * waveform_detail))));
+
+	// Render the waveform through the audio visualization effect so clip shortcuts
+	// and explicit effects share the same rendering path.
+	auto visual_frame = std::make_shared<Frame>(*frame.get());
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+    bool cleared=false;
+    if(VulkanRenderingEnabled()) try {
+        visual_frame->AddDeferredImage(SolidVulkanImage(raster_size.width(),raster_size.height(),Qt::transparent));cleared=true;
+    } catch(const std::exception& error) {Logger::Instance()->Log(std::string("Vulkan waveform CPU fallback: ")+error.what());}
+    if(!cleared)
+#endif
+    {
+        visual_frame->AddImage(std::make_shared<QImage>(raster_size.width(),raster_size.height(),QImage::Format_RGBA8888_Premultiplied));
+        visual_frame->GetImage()->fill(Qt::transparent);
+    }
+
+	AudioVisualization visualization;
+	visualization.visualization_type = waveform_mode;
+	visualization.style = AUDIO_VISUALIZATION_STYLE_MINIMAL;
+	visualization.color = Color(
+		static_cast<unsigned char>(red),
+		static_cast<unsigned char>(green),
+		static_cast<unsigned char>(blue),
+		static_cast<unsigned char>(alpha));
+	visualization.intensity = Keyframe(1.0);
+	visualization.smoothing = Keyframe(0.25);
+	visualization.detail = Keyframe(0.75);
+	visualization.glow = Keyframe(0.0);
+	visualization.color_spread = Keyframe(0.0);
+	visualization.color_mode = AUDIO_VISUALIZATION_COLOR_SEED;
+	visualization.channel_layout = AUDIO_VISUALIZATION_CHANNEL_AUTO;
+	visualization.frequency_low = Keyframe(0.0);
+	visualization.frequency_high = Keyframe(1.0);
+	visualization.background = AUDIO_VISUALIZATION_BACKGROUND_TRANSPARENT;
+	visualization.GetFrame(visual_frame, frame->number);
+
+    waveform_frame = frame->number;
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+    if (auto surface = visual_frame->GetDeferredImage()) {
+        waveform_surface = surface;
+        waveform_raster.reset();
+        frame->AddDeferredImage(surface);
+        return;
+    }
+    waveform_surface.reset();
+#endif
+    waveform_raster = std::make_shared<QImage>(*visual_frame->GetImage());
+    frame->AddImage(visual_frame->GetImage());
+}
+
+// Scale a source size to a target size (given a specific scale-type)
+QSize Clip::scale_size(QSize source_size, ScaleType source_scale, int target_width, int target_height) {
+    switch (source_scale)
+    {
+        case (SCALE_FIT): {
+            source_size.scale(target_width, target_height, Qt::KeepAspectRatio);
+            break;
+        }
+        case (SCALE_STRETCH): {
+            source_size.scale(target_width, target_height, Qt::IgnoreAspectRatio);
+            break;
+        }
+        case (SCALE_CROP): {
+            source_size.scale(target_width, target_height, Qt::KeepAspectRatioByExpanding);;
+            break;
+        }
+    }
+
+    return source_size;
+}
+
+// Get QTransform from keyframes
 QTransform Clip::get_transform(std::shared_ptr<Frame> frame, int width, int height)
 {
-    // Get image from clip
-    std::shared_ptr<QImage> source_image = frame->GetImage();
+	// Transform geometry does not require CPU pixels for a deferred surface.
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+	const QSize source_dimensions(frame->GetWidth(), frame->GetHeight());
+#else
+	const QSize source_dimensions = frame->GetImage()->size();
+#endif
 
-	/* ALPHA & OPACITY */
-	if (alpha.GetValue(frame->number) != 1.0)
-	{
-		float alpha_value = alpha.GetValue(frame->number);
-
-		// Get source image's pixels
-		unsigned char *pixels = source_image->bits();
-
-		// Loop through pixels
-		for (int pixel = 0, byte_index=0; pixel < source_image->width() * source_image->height(); pixel++, byte_index+=4)
-		{
-			// Apply alpha to pixel values (since we use a premultiplied value, we must
-			// multiply the alpha with all colors).
-			pixels[byte_index + 0] *= alpha_value;
-			pixels[byte_index + 1] *= alpha_value;
-			pixels[byte_index + 2] *= alpha_value;
-			pixels[byte_index + 3] *= alpha_value;
-		}
-
-		// Debug output
-		ZmqLogger::Instance()->AppendDebugMethod("Clip::get_transform (Set Alpha & Opacity)", "alpha_value", alpha_value, "frame->number", frame->number);
-	}
+	const double margin_value = std::max(0.0, std::min(0.5, margin.GetValue(frame->number)));
+	const double margin_pixels = margin_value * std::min(width, height);
+	const double layout_x = margin_pixels;
+	const double layout_y = margin_pixels;
+	const double layout_width = std::max(1.0, width - (margin_pixels * 2.0));
+	const double layout_height = std::max(1.0, height - (margin_pixels * 2.0));
 
 	/* RESIZE SOURCE IMAGE - based on scale type */
-	QSize source_size = source_image->size();
+	QSize source_size = scale_size(source_dimensions, scale, layout_width, layout_height);
 
-	// Apply stretch scale to correctly fit the bounding-box
-	if (parentTrackedObject){
-		scale = SCALE_STRETCH;
-	}
-
-	switch (scale)
-	{
-		case (SCALE_FIT): {
-			source_size.scale(width, height, Qt::KeepAspectRatio);
-
-			// Debug output
-			ZmqLogger::Instance()->AppendDebugMethod("Clip::get_transform (Scale: SCALE_FIT)", "frame->number", frame->number, "source_width", source_size.width(), "source_height", source_size.height());
-			break;
-		}
-		case (SCALE_STRETCH): {
-			source_size.scale(width, height, Qt::IgnoreAspectRatio);
-
-			// Debug output
-			ZmqLogger::Instance()->AppendDebugMethod("Clip::get_transform (Scale: SCALE_STRETCH)", "frame->number", frame->number, "source_width", source_size.width(), "source_height", source_size.height());
-			break;
-		}
-		case (SCALE_CROP): {
-			source_size.scale(width, height, Qt::KeepAspectRatioByExpanding);
-
-			// Debug output
-			ZmqLogger::Instance()->AppendDebugMethod("Clip::get_transform (Scale: SCALE_CROP)", "frame->number", frame->number, "source_width", source_size.width(), "source_height", source_size.height());
-			break;
-		}
-		case (SCALE_NONE): {
-		    // Image is already the original size (i.e. no scaling mode) relative
-		    // to the preview window size (i.e. timeline / preview ratio). No further
-		    // scaling is needed here.
-			// Debug output
-			ZmqLogger::Instance()->AppendDebugMethod("Clip::get_transform (Scale: SCALE_NONE)", "frame->number", frame->number, "source_width", source_size.width(), "source_height", source_size.height());
-			break;
-		}
+	// Text rasterizes extra detail for a scaled-up SCALE_NONE clip; draw it at its layout size
+	if (scale == SCALE_NONE) {
+		ReaderBase* source = reader;
+		if (auto* mapper = dynamic_cast<FrameMapper*>(source))
+			source = mapper->Reader();
+        if (Waveform() || dynamic_cast<QtTextReader*>(source)) {
+            const double detail = Waveform() ? waveform_detail : static_cast<QtTextReader*>(source)->DetailScale();
+			source_size = QSize(std::max(1, int(std::round(source_size.width() / detail))),
+			                    std::max(1, int(std::round(source_size.height() / detail))));
+        } else if (!scale_none_legacy && !source_raster_size.isEmpty() &&
+                   (dynamic_cast<QtImageReader*>(source) || dynamic_cast<FFmpegReader*>(source))) {
+            // Reader detail may change after a drag; SCALE_NONE must retain its
+            // logical source size instead of applying the extra raster scale twice.
+            // The independent compatibility flag preserves imported project bounds.
+            auto* parent = static_cast<Timeline*>(timeline);
+            const double preview = parent && parent->info.width > 0 ? width / double(parent->info.width) : 1.0;
+            source_size = QSize(std::max(1, int(std::round(source_size.width() * source->info.width * preview / source_raster_size.width()))),
+                                std::max(1, int(std::round(source_size.height() * source->info.height * preview / source_raster_size.height()))));
+        }
 	}
 
 	// Initialize parent object's properties (Clip or Tracked Object)
@@ -1399,63 +2011,53 @@ QTransform Clip::get_transform(std::shared_ptr<Frame> frame, int width, int heig
 	float parentObject_rotation = 0.0;
 
 	// Get the parentClipObject properties
-	if (parentClipObject){
-
-		// Convert Clip's frame position to Timeline's frame position
-		long clip_start_position = round(Position() * info.fps.ToDouble()) + 1;
-		long clip_start_frame = (Start() * info.fps.ToDouble()) + 1;
-		double timeline_frame_number = frame->number + clip_start_position - clip_start_frame;
+	if (GetParentClip()){
+        // Get the start trim position of the parent clip
+        long parent_start_offset = parentClipObject->Start() * info.fps.ToDouble();
+        long parent_frame_number = frame->number + parent_start_offset;
 
 		// Get parent object's properties (Clip)
-		parentObject_location_x = parentClipObject->location_x.GetValue(timeline_frame_number); 
-		parentObject_location_y = parentClipObject->location_y.GetValue(timeline_frame_number);
-		parentObject_scale_x = parentClipObject->scale_x.GetValue(timeline_frame_number);
-		parentObject_scale_y = parentClipObject->scale_y.GetValue(timeline_frame_number);
-		parentObject_shear_x = parentClipObject->shear_x.GetValue(timeline_frame_number);
-		parentObject_shear_y = parentClipObject->shear_y.GetValue(timeline_frame_number);
-		parentObject_rotation = parentClipObject->rotation.GetValue(timeline_frame_number);
+		parentObject_location_x = parentClipObject->location_x.GetValue(parent_frame_number);
+		parentObject_location_y = parentClipObject->location_y.GetValue(parent_frame_number);
+		parentObject_scale_x = parentClipObject->scale_x.GetValue(parent_frame_number);
+		parentObject_scale_y = parentClipObject->scale_y.GetValue(parent_frame_number);
+		parentObject_shear_x = parentClipObject->shear_x.GetValue(parent_frame_number);
+		parentObject_shear_y = parentClipObject->shear_y.GetValue(parent_frame_number);
+		parentObject_rotation = parentClipObject->rotation.GetValue(parent_frame_number);
 	}
 
-	// Get the parentTrackedObject properties
-	if (parentTrackedObject){
+    // Get the parentTrackedObject properties
+    if (GetParentTrackedObject()){
+        // Get the attached object's parent clip's properties
+        Clip* parentClip = (Clip*) parentTrackedObject->ParentClip();
+        if (parentClip)
+        {
+            // Get the start trim position of the parent clip
+            long parent_start_offset = parentClip->Start() * info.fps.ToDouble();
+            long parent_frame_number = frame->number + parent_start_offset;
 
-		// Convert Clip's frame position to Timeline's frame position
-		long clip_start_position = round(Position() * info.fps.ToDouble()) + 1;
-		long clip_start_frame = (Start() * info.fps.ToDouble()) + 1;
-		double timeline_frame_number = frame->number + clip_start_position - clip_start_frame;
+            // Access the parentTrackedObject's properties
+            std::map<std::string, float> trackedObjectProperties = parentTrackedObject->GetBoxValues(parent_frame_number);
 
-		// Get parentTrackedObject's parent clip's properties
-		std::map<std::string, float> trackedObjectParentClipProperties = parentTrackedObject->GetParentClipProperties(timeline_frame_number);
+            // Get actual scaled parent size
+            QSize parent_size = scale_size(QSize(parentClip->info.width, parentClip->info.height),
+                                           parentClip->scale, width, height);
 
-		// Get the attached object's parent clip's properties
-		if (!trackedObjectParentClipProperties.empty())
-		{
-			// Get parent object's properties (Tracked Object)
-			float parentObject_frame_number = trackedObjectParentClipProperties["frame_number"];
+            // Get actual scaled tracked object size
+            int trackedWidth = trackedObjectProperties["w"] * trackedObjectProperties["sx"] * parent_size.width() *
+                    parentClip->scale_x.GetValue(parent_frame_number);
+            int trackedHeight = trackedObjectProperties["h"] * trackedObjectProperties["sy"] * parent_size.height() *
+                    parentClip->scale_y.GetValue(parent_frame_number);
 
-			// Access the parentTrackedObject's properties
-			std::map<std::string, float> trackedObjectProperties = parentTrackedObject->GetBoxValues(parentObject_frame_number);
+            // Scale the clip source_size based on the actual tracked object size
+            source_size = scale_size(source_size, scale, trackedWidth, trackedHeight);
 
-			// Get the Tracked Object's properties and correct them by the clip's reference system
-			parentObject_location_x = trackedObjectProperties["cx"] - 0.5 + trackedObjectParentClipProperties["location_x"];
-			parentObject_location_y = trackedObjectProperties["cy"] - 0.5 + trackedObjectParentClipProperties["location_y"];
-			parentObject_scale_x = trackedObjectProperties["w"]*trackedObjectProperties["sx"];
-			parentObject_scale_y = trackedObjectProperties["h"]*trackedObjectProperties["sy"];
-			parentObject_rotation = trackedObjectProperties["r"] + trackedObjectParentClipProperties["rotation"];
-		} 
-		else 
-		{
-			// Access the parentTrackedObject's properties
-			std::map<std::string, float> trackedObjectProperties = parentTrackedObject->GetBoxValues(timeline_frame_number);
-
-			// Get the Tracked Object's properties and correct them by the clip's reference system
-			parentObject_location_x = trackedObjectProperties["cx"] - 0.5;
-			parentObject_location_y = trackedObjectProperties["cy"] - 0.5;
-			parentObject_scale_x = trackedObjectProperties["w"]*trackedObjectProperties["sx"];
-			parentObject_scale_y = trackedObjectProperties["h"]*trackedObjectProperties["sy"];
-			parentObject_rotation = trackedObjectProperties["r"];
-		}
-	}
+            // Update parentObject's properties based on the tracked object's properties and parent clip's scale
+            parentObject_location_x = parentClip->location_x.GetValue(parent_frame_number) + ((trackedObjectProperties["cx"] - 0.5) * parentClip->scale_x.GetValue(parent_frame_number));
+            parentObject_location_y = parentClip->location_y.GetValue(parent_frame_number) + ((trackedObjectProperties["cy"] - 0.5) * parentClip->scale_y.GetValue(parent_frame_number));
+            parentObject_rotation = trackedObjectProperties["r"] + parentClip->rotation.GetValue(parent_frame_number);
+        }
+    }
 
 	/* GRAVITY LOCATION - Initialize X & Y to the correct values (before applying location curves) */
 	float x = 0.0; // left
@@ -1473,64 +2075,99 @@ QTransform Clip::get_transform(std::shared_ptr<Frame> frame, int width, int heig
 
 	float scaled_source_width = source_size.width() * sx;
 	float scaled_source_height = source_size.height() * sy;
-	
+
 	switch (gravity)
 	{
 		case (GRAVITY_TOP_LEFT):
+			x = layout_x;
+			y = layout_y;
 			// This is only here to prevent unused-enum warnings
 			break;
 		case (GRAVITY_TOP):
-			x = (width - scaled_source_width) / 2.0; // center
+			x = layout_x + ((layout_width - scaled_source_width) / 2.0); // center
+			y = layout_y;
 			break;
 		case (GRAVITY_TOP_RIGHT):
-			x = width - scaled_source_width; // right
+			x = layout_x + layout_width - scaled_source_width; // right
+			y = layout_y;
 			break;
 		case (GRAVITY_LEFT):
-			y = (height - scaled_source_height) / 2.0; // center
+			x = layout_x;
+			y = layout_y + ((layout_height - scaled_source_height) / 2.0); // center
 			break;
 		case (GRAVITY_CENTER):
-			x = (width - scaled_source_width) / 2.0; // center
-			y = (height - scaled_source_height) / 2.0; // center
+			x = layout_x + ((layout_width - scaled_source_width) / 2.0); // center
+			y = layout_y + ((layout_height - scaled_source_height) / 2.0); // center
 			break;
 		case (GRAVITY_RIGHT):
-			x = width - scaled_source_width; // right
-			y = (height - scaled_source_height) / 2.0; // center
+			x = layout_x + layout_width - scaled_source_width; // right
+			y = layout_y + ((layout_height - scaled_source_height) / 2.0); // center
 			break;
 		case (GRAVITY_BOTTOM_LEFT):
-			y = (height - scaled_source_height); // bottom
+			x = layout_x;
+			y = layout_y + (layout_height - scaled_source_height); // bottom
 			break;
 		case (GRAVITY_BOTTOM):
-			x = (width - scaled_source_width) / 2.0; // center
-			y = (height - scaled_source_height); // bottom
+			x = layout_x + ((layout_width - scaled_source_width) / 2.0); // center
+			y = layout_y + (layout_height - scaled_source_height); // bottom
 			break;
 		case (GRAVITY_BOTTOM_RIGHT):
-			x = width - scaled_source_width; // right
-			y = (height - scaled_source_height); // bottom
+			x = layout_x + layout_width - scaled_source_width; // right
+			y = layout_y + (layout_height - scaled_source_height); // bottom
 			break;
 	}
 
 	// Debug output
-	ZmqLogger::Instance()->AppendDebugMethod("Clip::get_transform (Gravity)", "frame->number", frame->number, "source_clip->gravity", gravity, "scaled_source_width", scaled_source_width, "scaled_source_height", scaled_source_height);
+	Logger::Instance()->AppendDebugMethod(
+		"Clip::get_transform (Gravity)",
+		"frame->number", frame->number,
+		"source_clip->gravity", gravity,
+		"scaled_source_width", scaled_source_width,
+		"scaled_source_height", scaled_source_height);
 
 	QTransform transform;
-		
+
 	/* LOCATION, ROTATION, AND SCALE */
 	float r = rotation.GetValue(frame->number) + parentObject_rotation; // rotate in degrees
-	x += (width * (location_x.GetValue(frame->number) + parentObject_location_x )); // move in percentage of final width
-	y += (height * (location_y.GetValue(frame->number) + parentObject_location_y )); // move in percentage of final height
+	float location_x_value = location_x.GetValue(frame->number) + parentObject_location_x;
+	float location_y_value = location_y.GetValue(frame->number) + parentObject_location_y;
+	auto location_offset = [](float location, float anchored_position, float canvas_size, float clip_size) {
+		if (location < 0.0f) {
+			return location * (anchored_position + clip_size);
+		}
+		return location * (canvas_size - anchored_position);
+	};
+	// Preserve imported location curves in their original units. Converting only
+	// their keyframes cannot preserve animated scale/margin or reader resizing.
+	if (location_coordinate_system == "geometry" ||
+		(location_coordinate_system != "canvas" && scale == SCALE_CROP)) {
+		x += location_offset(location_x_value, x - layout_x, layout_width, scaled_source_width);
+		y += location_offset(location_y_value, y - layout_y, layout_height, scaled_source_height);
+	} else {
+		// Preserve the historical canvas-relative meaning of location_x/y for
+		// non-cropped clips. Existing projects store these values as a fraction
+		// of the canvas dimensions, not of the scaled clip geometry.
+		x += width * location_x_value;
+		y += height * location_y_value;
+	}
 	float shear_x_value = shear_x.GetValue(frame->number) + parentObject_shear_x;
 	float shear_y_value = shear_y.GetValue(frame->number) + parentObject_shear_y;
 	float origin_x_value = origin_x.GetValue(frame->number);
 	float origin_y_value = origin_y.GetValue(frame->number);
 
 	// Transform source image (if needed)
-	ZmqLogger::Instance()->AppendDebugMethod("Clip::get_transform (Build QTransform - if needed)", "frame->number", frame->number, "x", x, "y", y, "r", r, "sx", sx, "sy", sy);
+	Logger::Instance()->AppendDebugMethod(
+		"Clip::get_transform (Build QTransform - if needed)",
+		"frame->number", frame->number,
+		"x", x, "y", y,
+		"r", r,
+		"sx", sx, "sy", sy);
 
-	if (!isEqual(x, 0) || !isEqual(y, 0)) {
+	if (!isNear(x, 0) || !isNear(y, 0)) {
 		// TRANSLATE/MOVE CLIP
 		transform.translate(x, y);
-	} 
-	if (!isEqual(r, 0) || !isEqual(shear_x_value, 0) || !isEqual(shear_y_value, 0)) {
+	}
+	if (!isNear(r, 0) || !isNear(shear_x_value, 0) || !isNear(shear_y_value, 0)) {
 		// ROTATE CLIP (around origin_x, origin_y)
 		float origin_x_offset = (scaled_source_width * origin_x_value);
 		float origin_y_offset = (scaled_source_height * origin_y_value);
@@ -1540,11 +2177,34 @@ QTransform Clip::get_transform(std::shared_ptr<Frame> frame, int width, int heig
 		transform.translate(-origin_x_offset,-origin_y_offset);
 	}
 	// SCALE CLIP (if needed)
-	float source_width_scale = (float(source_size.width()) / float(source_image->width())) * sx;
-	float source_height_scale = (float(source_size.height()) / float(source_image->height())) * sy;
-	if (!isEqual(source_width_scale, 1.0) || !isEqual(source_height_scale, 1.0)) {
+	float source_width_scale = (float(source_size.width()) / float(source_dimensions.width())) * sx;
+	float source_height_scale = (float(source_size.height()) / float(source_dimensions.height())) * sy;
+	if (!isNear(source_width_scale, 1.0) || !isNear(source_height_scale, 1.0)) {
 		transform.scale(source_width_scale, source_height_scale);
 	}
 
-    return transform;
+	return transform;
+}
+
+// Adjust frame number for Clip position and start (which can result in a different number)
+int64_t Clip::adjust_timeline_framenumber(int64_t clip_frame_number) {
+
+	// Get clip position from parent clip (if any)
+	float position = 0.0;
+	float start = 0.0;
+	Clip *parent = static_cast<Clip *>(ParentClip());
+	if (parent) {
+		position = parent->Position();
+		start = parent->Start();
+	}
+
+	// Adjust start frame and position based on parent clip.
+	// This ensures the same frame # is used by mapped readers and clips,
+	// when calculating samples per frame.
+	// Thus, this prevents gaps and mismatches in # of samples.
+	int64_t clip_start_frame = (start * info.fps.ToDouble()) + 1;
+	int64_t clip_start_position = round(position * info.fps.ToDouble()) + 1;
+	int64_t frame_number = clip_frame_number + clip_start_position - clip_start_frame;
+
+	return frame_number;
 }

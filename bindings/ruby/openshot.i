@@ -1,34 +1,33 @@
-/* ####################### src/openshot.i (libopenshot) ########################
-# @brief SWIG configuration for libopenshot (to generate Ruby SWIG bindings)
-# @author Jonathan Thomas <jonathan@openshot.org>
-#
-# @section LICENSE
-#
-# Copyright (c) 2008-2019 OpenShot Studios, LLC
-# <http://www.openshotstudios.com/>. This file is part of
-# OpenShot Library (libopenshot), an open-source project dedicated to
-# delivering high quality video editing and animation solutions to the
-# world. For more information visit <http://www.openshot.org/>.
-#
-# OpenShot Library (libopenshot) is free software: you can redistribute it
-# and/or modify it under the terms of the GNU Lesser General Public License
-# as published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# OpenShot Library (libopenshot) is distributed in the hope that it will be
-# useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU Lesser General Public License for more details.
-#
-# You should have received a copy of the GNU Lesser General Public License
-# along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
-################################################################################ */
+/**
+ * @file
+ * @brief SWIG configuration for libopenshot (to generate Python SWIG bindings)
+ * @author Jonathan Thomas <jonathan@openshot.org>
+ *
+ * @section LICENSE
+*/
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
-
-%module openshot
+%module("threads"=1) openshot
 
 /* Suppress warnings about ignored operator= */
 %warnfilter(362);
+
+/* JUCE thread internals are implementation details, not binding API */
+%ignore juce::Thread;
+namespace juce {
+    class Thread {};
+}
+
+/* Ruby bindings intentionally expose the primary OpenShot base class only */
+%warnfilter(802) openshot::Clip;
+%warnfilter(802) openshot::Timeline;
+
+/* Ruby bindings do not expose Profile comparison operators */
+%warnfilter(503) operator<;
+%warnfilter(503) operator>;
+%warnfilter(503) operator==;
 
 /* Don't generate multiple wrappers for functions with default args */
 %feature("compactdefaultargs", "1");
@@ -43,6 +42,10 @@
 %include "std_vector.i"
 %include "std_map.i"
 %include <stdint.i>
+%apply uint64_t { uintptr_t };
+
+// Ignore QWidget overloads (Qt types are not wrapped in Ruby bindings)
+%ignore openshot::QtPlayer::SetQWidget(QWidget *);
 
 /* Unhandled STL Exception Handling */
 %include <std_except.i>
@@ -54,15 +57,36 @@
 #ifdef USE_IMAGEMAGICK
 	%shared_ptr(Magick::Image)
 #endif
-%shared_ptr(juce::AudioSampleBuffer)
+%shared_ptr(juce::AudioBuffer<float>)
 %shared_ptr(openshot::Frame)
 
-/* Template specializations */
+%newobject openshot::Clip::CreateReader;
+
+/* Instantiate the required template specializations */
 %template() std::map<std::string, int>;
 %template() std::pair<int, int>;
 %template() std::vector<int>;
+%template() std::vector<float>;
 %template() std::pair<double, double>;
 %template() std::pair<float, float>;
+%template() std::pair<std::string, std::string>;
+%template() std::vector<std::pair<std::string, std::string>>;
+%template() std::vector<std::vector<float>>;
+
+%inline %{
+typedef struct OpenShotByteBuffer {
+    const unsigned char* data;
+    int size;
+} OpenShotByteBuffer;
+%}
+
+%typemap(out) OpenShotByteBuffer {
+    if ($1.data && $1.size > 0) {
+        $result = rb_str_new(reinterpret_cast<const char*>($1.data), $1.size);
+    } else {
+        $result = Qnil;
+    }
+}
 
 %{
 /* Ruby and FFmpeg define competing RSHIFT macros,
@@ -76,6 +100,8 @@
 #include "OpenShotVersion.h"
 #include "ReaderBase.h"
 #include "WriterBase.h"
+#include "AudioDevices.h"
+#include "AudioWaveformer.h"
 #include "CacheBase.h"
 #include "CacheDisk.h"
 #include "CacheMemory.h"
@@ -109,8 +135,8 @@
 #include "Settings.h"
 #include "TimelineBase.h"
 #include "Timeline.h"
-#include "ZmqLogger.h"
-#include "AudioDeviceInfo.h"
+#include "Qt/VideoCacheThread.h"
+#include "Logger.h"
 
 /* Move FFmpeg's RSHIFT to FF_RSHIFT, if present */
 #ifdef RSHIFT
@@ -123,12 +149,8 @@
 #endif
 %}
 
-#ifdef USE_BLACKMAGIC
-	%{
-		#include "DecklinkReader.h"
-		#include "DecklinkWriter.h"
-	%}
-#endif
+// Prevent SWIG from ever generating a wrapper for juce::Thread’s constructor (or run())
+%ignore juce::Thread::Thread;
 
 #ifdef USE_IMAGEMAGICK
 	%{
@@ -138,9 +160,62 @@
 	%}
 #endif
 
+/* Wrap std templates (list, vector, etc...) */
+%template(ClipList) std::list<openshot::Clip *>;
+%template(EffectBaseList) std::list<openshot::EffectBase *>;
+%template(CoordinateVector) std::vector<openshot::Coordinate>;
+%template(PointsVector) std::vector<openshot::Point>;
+%template(FieldVector) std::vector<openshot::Field>;
+%template(MappedFrameVector) std::vector<openshot::MappedFrame>;
+%template(MetadataMap) std::map<std::string, std::string>;
+
+/* Deprecated */
+%template(AudioDeviceInfoVector) std::vector<openshot::AudioDeviceInfo>;
+
+%extend openshot::Frame {
+    OpenShotByteBuffer GetPixelsBytes() {
+        OpenShotByteBuffer out = {NULL, 0};
+        std::shared_ptr<QImage> img = $self->GetImage();
+        if (!img) return out;
+
+        const int size = img->bytesPerLine() * img->height();
+
+        const unsigned char* p = $self->GetPixels();
+        if (!p || size <= 0) return out;
+
+        out.data = p;
+        out.size = size;
+        return out;
+    }
+
+    OpenShotByteBuffer GetPixelsRowBytes(int row) {
+        OpenShotByteBuffer out = {NULL, 0};
+        std::shared_ptr<QImage> img = $self->GetImage();
+        if (!img) return out;
+
+        if (row < 0 || row >= img->height()) {
+            rb_raise(rb_eIndexError, "row out of range");
+        }
+
+        const unsigned char* p = $self->GetPixels(row);
+        if (!p) return out;
+
+        out.data = p;
+        out.size = img->bytesPerLine();
+        return out;
+    }
+
+    int GetBytesPerLine() {
+        std::shared_ptr<QImage> img = $self->GetImage();
+        return img ? img->bytesPerLine() : 0;
+    }
+}
+
 %include "OpenShotVersion.h"
 %include "ReaderBase.h"
 %include "WriterBase.h"
+%include "AudioDevices.h"
+%include "AudioWaveformer.h"
 %include "CacheBase.h"
 %include "CacheDisk.h"
 %include "CacheMemory.h"
@@ -151,10 +226,6 @@
 %include "Clip.h"
 %include "Coordinate.h"
 %include "Color.h"
-#ifdef USE_BLACKMAGIC
-	%include "DecklinkReader.h"
-	%include "DecklinkWriter.h"
-#endif
 %include "DummyReader.h"
 %include "EffectBase.h"
 %include "Effects.h"
@@ -195,12 +266,13 @@
 %include "QtPlayer.h"
 %include "QtTextReader.h"
 %include "KeyFrame.h"
+%include "AnimatedCurve.h"
 %include "RendererBase.h"
 %include "Settings.h"
 %include "TimelineBase.h"
+%include "Qt/VideoCacheThread.h"
 %include "Timeline.h"
-%include "ZmqLogger.h"
-%include "AudioDeviceInfo.h"
+%include "Logger.h"
 
 #ifdef USE_IMAGEMAGICK
 	%include "ImageReader.h"
@@ -208,8 +280,8 @@
 	%include "TextReader.h"
 #endif
 
-
 /* Effects */
+%include "audio_effects/PitchShift.h"
 %include "effects/Bars.h"
 %include "effects/Blur.h"
 %include "effects/Brightness.h"
@@ -218,21 +290,14 @@
 %include "effects/ColorShift.h"
 %include "effects/Crop.h"
 %include "effects/Deinterlace.h"
+%include "effects/FilmGrain.h"
 %include "effects/Hue.h"
+%include "effects/LensFlare.h"
 %include "effects/Mask.h"
 %include "effects/Negate.h"
 %include "effects/Pixelate.h"
 %include "effects/Saturation.h"
 %include "effects/Shift.h"
+%include "effects/Timer.h"
+%include "effects/DenoiseImage.h"
 %include "effects/Wave.h"
-
-
-/* Wrap std templates (list, vector, etc...) */
-%template(ClipList) std::list<openshot::Clip *>;
-%template(EffectBaseList) std::list<openshot::EffectBase *>;
-%template(CoordinateVector) std::vector<openshot::Coordinate>;
-%template(PointsVector) std::vector<openshot::Point>;
-%template(FieldVector) std::vector<openshot::Field>;
-%template(MappedFrameVector) std::vector<openshot::MappedFrame>;
-%template(MetadataMap) std::map<std::string, std::string>;
-%template(AudioDeviceInfoVector) std::vector<openshot::AudioDeviceInfo>;

@@ -1,5 +1,6 @@
-#ifndef OPENSHOT_H
-#define OPENSHOT_H
+// Copyright (c) 2008-2021 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 /**
  * @file
@@ -62,7 +63,7 @@
  * The <b>following graphic</b> displays a timeline, and how clips can be arranged, scaled, and layered together. It
  * also demonstrates how the viewport can be scaled smaller than the canvas, which can be used to zoom and pan around the
  * canvas (i.e. pan & scan).
- * \image html /doc/images/Timeline_Layers.png
+ * \image html Timeline_Layers.png
  *
  * ### Build Instructions ###
  * Build instructions are available for all three major Operating Systems:
@@ -95,13 +96,21 @@
  * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#ifndef OPENSHOT_H
+#define OPENSHOT_H
+
 // Include the version number of OpenShot Library
 #include "OpenShotVersion.h"
+#include "Logger.h"
+#include "ZmqLogger.h" // Deprecated source compatibility alias
 
 // Include all other classes
 #include "AudioBufferSource.h"
+#include "AudioLocation.h"
 #include "AudioReaderSource.h"
+#include "AudioRecorder.h"
 #include "AudioResampler.h"
+#include "CameraCaptureReader.h"
 #include "CacheDisk.h"
 #include "CacheMemory.h"
 #include "ChunkReader.h"
@@ -109,10 +118,6 @@
 #include "Clip.h"
 #include "ClipBase.h"
 #include "Coordinate.h"
-#ifdef USE_BLACKMAGIC
-	#include "DecklinkReader.h"
-	#include "DecklinkWriter.h"
-#endif
 #include "DummyReader.h"
 #include "EffectBase.h"
 #include "Effects.h"
@@ -120,11 +125,13 @@
 #include "Enums.h"
 #include "Exceptions.h"
 #include "ReaderBase.h"
+#include "ScreenCaptureReader.h"
 #include "WriterBase.h"
 #include "FFmpegReader.h"
 #include "FFmpegWriter.h"
 #include "Fraction.h"
 #include "Frame.h"
+#include "FrameScope.h"
 #include "FrameMapper.h"
 #ifdef USE_IMAGEMAGICK
 	#include "ImageReader.h"

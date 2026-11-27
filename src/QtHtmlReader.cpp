@@ -8,30 +8,14 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "QtHtmlReader.h"
 #include "Exceptions.h"
+#include "Frame.h"
+
 #include <QImage>
 #include <QPainter>
 #include <QTextDocument>
@@ -112,6 +96,7 @@ void QtHtmlReader::Open()
 		// Update image properties
 		info.has_audio = false;
 		info.has_video = true;
+		info.has_single_image = true;
 		info.file_size = 0;
 		info.vcodec = "QImage";
 		info.width = width;
@@ -160,12 +145,17 @@ void QtHtmlReader::Close()
 // Get an openshot::Frame object for a specific frame number of this reader.
 std::shared_ptr<Frame> QtHtmlReader::GetFrame(int64_t requested_frame)
 {
+	// Create a scoped lock, allowing only a single thread to run the following code at one time
+	const std::lock_guard<std::recursive_mutex> lock(getFrameMutex);
+
+	auto sample_count = Frame::GetSamplesPerFrame(requested_frame, info.fps, info.sample_rate, info.channels);
+
 	if (image)
 	{
 		// Create or get frame object
 		auto image_frame = std::make_shared<Frame>(
 			requested_frame, image->size().width(), image->size().height(),
-			background_color, 0, 2);
+			background_color, sample_count, info.channels);
 
 		// Add Image data to frame
 		image_frame->AddImage(image);
@@ -175,12 +165,11 @@ std::shared_ptr<Frame> QtHtmlReader::GetFrame(int64_t requested_frame)
 	} else {
 		// return empty frame
 		auto image_frame = std::make_shared<Frame>(
-			1, 640, 480, background_color, 0, 2);
+			1, 640, 480, background_color, sample_count, info.channels);
 
 		// return frame object
 		return image_frame;
 	}
-
 }
 
 // Generate JSON string of this object

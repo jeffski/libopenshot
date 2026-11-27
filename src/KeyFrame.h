@@ -6,35 +6,16 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_KEYFRAME_H
 #define OPENSHOT_KEYFRAME_H
 
-#include <cmath>
+#include <iostream>
 #include <vector>
 
-#include "Fraction.h"
 #include "Point.h"
 #include "Json.h"
 
@@ -85,6 +66,9 @@ namespace openshot {
 		/// Constructor which adds a supplied vector of Points
 		Keyframe(const std::vector<openshot::Point>& points);
 
+		/// Destructor
+		~Keyframe();
+
 		/// Add a new point on the key-frame.  Each point has a primary coordinate, a left handle, and a right handle.
 		void AddPoint(Point p);
 
@@ -103,14 +87,14 @@ namespace openshot {
 		/// Get the value at a specific index
 		double GetValue(int64_t index) const;
 
+        /// Evaluate the same curve at a fractional frame (for audio automation).
+        double GetValueAtFrame(double index) const;
+
 		/// Get the rounded INT value at a specific index
 		int GetInt(int64_t index) const;
 
 		/// Get the rounded LONG value at a specific index
 		int64_t GetLong(int64_t index) const;
-
-		/// Get the fraction that represents how many times this value is repeated in the curve
-		Fraction GetRepeatFraction(int64_t index) const;
 
 		/// Get the change in Y value (from the previous Y value)
 		double GetDelta(int64_t index) const;
@@ -160,10 +144,10 @@ namespace openshot {
 		void UpdatePoint(int64_t index, Point p);
 
 		/// Print a list of points
-		void PrintPoints() const;
+		void PrintPoints(std::ostream* out=&std::cout) const;
 
 		/// Print just the Y value of the point's primary coordinate
-		void PrintValues() const;
+		void PrintValues(std::ostream* out=&std::cout) const;
 
 	};
 

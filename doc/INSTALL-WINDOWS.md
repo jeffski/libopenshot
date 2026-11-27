@@ -1,3 +1,9 @@
+<!--
+© OpenShot Studios, LLC
+
+SPDX-License-Identifier: LGPL-3.0-or-later
+-->
+
 # Building libopenshot for Windows
 
 ## Getting Started
@@ -40,7 +46,8 @@ have been labeled in the list below to help distinguish between them.
 
 ### Qt 5 (libqt5)
   * http://www.qt.io/qt5/ `(Library)`
-  * Qt5 is used to display video, store image data, composite images, apply image effects, and many other utility functions, such as file system manipulation, high resolution timers, etc...
+  * Qt5/Qt6 is used to display video, store image data, composite images, apply image effects, and many other utility functions, such as file system manipulation, high resolution timers, etc...
+  * Use the CMake option `-DUSE_QT6=ON|OFF|AUTO` (default AUTO) to pick a Qt major version; Qt6 builds require CMake 3.16+.
 
 ### CMake (cmake)
   * http://www.cmake.org/ `(Executable)`
@@ -61,10 +68,6 @@ have been labeled in the list below to help distinguish between them.
 ### UnitTest++ (libunittest++)
   * https://github.com/unittest-cpp/ `(Library)`
   * This library is used to execute unit tests for libopenshot.  It contains many macros used to keep our unit testing code very clean and simple.
-
-### ZeroMQ (libzmq)
-  * http://zeromq.org/ `(Library)`
-  * This library is used to communicate between libopenshot and other applications (publisher / subscriber). Primarily used to send debug data from libopenshot.
 
 ### OpenMP (-fopenmp)
   * http://openmp.org/wp/ `(Compiler Flag)`
@@ -109,7 +112,6 @@ check each folder path for accuracy, as your paths will likely be different than
 * QTDIR (`C:\qt5`)
 * SNDFILE_DIR (`C:\Program Files\libsndfile`)
 * UNITTEST_DIR (`C:\UnitTest++`)
-* ZMQDIR (`C:\msys2\usr\local\`)
 * PATH (`The following paths are an example`)
    * `C:\Qt5\bin; C:\Qt5\MinGW\bin\; C:\msys\1.0\local\lib; C:\Program Files\CMake 2.8\bin; C:\UnitTest++\build; C:\libopenshot\build\src; C:\Program Files\doxygen\bin; C:\ffmpeg-git-95f163b-win32-dev\lib; C:\swigwin-2.0.4; C:\Python33; C:\Program Files\Project\lib; C:\msys2\usr\local\`
 
@@ -173,7 +175,7 @@ directions to setup a Windows build environment for OpenShot.
 ```
 PATH=$PATH:/c/msys64/mingw64/bin:/c/msys64/mingw64/lib     (64-bit PATH)
   or 
-PATH=$PATH:/c/msys32/mingw32/bin:/c/msys32/mingw32/lib     (32-bit PATH)
+PATH=$PATH:/c/msys64/mingw32/bin:/c/msys64/mingw32/lib     (32-bit PATH)
 ```
 
 4) Update and upgrade all packages
@@ -185,17 +187,14 @@ pacman -Syu
 5a) Install the following packages (**64-Bit**)
 
 ```
-pacman -S --needed base-devel mingw-w64-x86_64-toolchain
-pacman -S mingw64/mingw-w64-x86_64-ffmpeg
-pacman -S mingw64/mingw-w64-x86_64-python3-pyqt5
-pacman -S mingw64/mingw-w64-x86_64-swig
-pacman -S mingw64/mingw-w64-x86_64-cmake
-pacman -S mingw64/mingw-w64-x86_64-doxygen
-pacman -S mingw64/mingw-w64-x86_64-python3-pip
-pacman -S mingw32/mingw-w64-i686-zeromq
-pacman -S mingw64/mingw-w64-x86_64-python3-pyzmq
-pacman -S mingw64/mingw-w64-x86_64-python3-cx_Freeze
-pacman -S git
+pacman -S --needed --noconfirm \
+mingw-w64-x86_64-rust base-devel mingw-w64-x86_64-toolchain \
+mingw-w64-x86_64-ffmpeg mingw-w64-x86_64-qt5 mingw-w64-x86_64-python3-pyqt5 \
+mingw-w64-x86_64-swig mingw-w64-x86_64-cmake mingw-w64-x86_64-doxygen \
+mingw-w64-x86_64-python3-pip \
+mingw-w64-x86_64-python3-cx_Freeze mingw-w64-x86_64-ninja mingw-w64-x86_64-catch \
+mingw-w64-x86_64-python3-PyOpenGL mingw-w64-clang-x86_64-python-pyopengl-accelerate \
+mingw-w64-x86_64-python-pyopengl-accelerate mingw-w64-x86_64-python-pywin32 git
 
 # Install ImageMagick if needed (OPTIONAL and NOT NEEDED)
 pacman -S mingw64/mingw-w64-x86_64-imagemagick
@@ -204,17 +203,13 @@ pacman -S mingw64/mingw-w64-x86_64-imagemagick
 5b) **Or** Install the following packages (**32-Bit**)
 
 ```
-pacman -S --needed base-devel mingw32/mingw-w64-i686-toolchain
-pacman -S mingw32/mingw-w64-i686-ffmpeg
-pacman -S mingw32/mingw-w64-i686-python3-pyqt5
-pacman -S mingw32/mingw-w64-i686-swig
-pacman -S mingw32/mingw-w64-i686-cmake
-pacman -S mingw32/mingw-w64-i686-doxygen
-pacman -S mingw32/mingw-w64-i686-python3-pip
-pacman -S mingw32/mingw-w64-i686-zeromq
-pacman -S mingw32/mingw-w64-i686-python3-pyzmq
-pacman -S mingw32/mingw-w64-i686-python3-cx_Freeze
-pacman -S git
+pacman -S --needed --noconfirm \
+mingw-w64-i686-rust mingw-w64-i686-toolchain mingw-w64-i686-ffmpeg \
+mingw-w64-i686-qt5 mingw-w64-i686-python3-pyqt5 mingw-w64-i686-swig \
+mingw-w64-i686-cmake mingw-w64-i686-doxygen mingw-w64-i686-python3-pip \
+mingw-w64-i686-python3-cx_Freeze \
+mingw-w64-i686-ninja mingw-w64-i686-catch mingw-w64-i686-python-pyopengl \
+mingw-w64-i686-python-pyopengl-accelerate mingw-w64-i686-python-pywin32
 
 # Install ImageMagick if needed (OPTIONAL and NOT NEEDED)
 pacman -S mingw32/mingw-w32-x86_32-imagemagick
@@ -228,6 +223,9 @@ pip3 install slacker
 pip3 install tinys3
 pip3 install github3.py
 pip3 install requests
+pip3 install meson
+pip3 install PyOpenGL
+pip3 install PyOpenGL-accelerate
 ```  
 
 7) Download Unittest++ (https://github.com/unittest-cpp/unittest-cpp) into /MSYS2/[USER]/unittest-cpp-master/
@@ -237,8 +235,54 @@ cmake -G "MSYS Makefiles" ../ -DCMAKE_MAKE_PROGRAM=mingw32-make -DCMAKE_INSTALL_
 mingw32-make install
 ```
 
-8) ZMQ++ Header (This might not be needed anymore)
-  NOTE: Download and copy zmq.hpp into the /c/msys64/mingw64/include/ folder
+8) Install babl pixel encoding and color space conversion engine (https://gegl.org/babl/)
+
+``` 
+git clone https://gitlab.gnome.org/GNOME/babl.git
+cd babl
+meson build --prefix=C:/msys64/mingw64    (or `--prefix=C:/msys64/mingw32` for a 32 bit build)
+cd build
+meson install
+```
+
+9) Install opencv (used for AI and computer vision effects)
+
+Note: Had to edit 1 header file and add a missing typedef: `typedef unsigned int uint;`
+
+``` 
+git clone https://github.com/opencv/opencv
+cd opencv/
+git checkout '4.3.0'
+cd ..
+git clone https://github.com/opencv/opencv_contrib
+cd opencv_contrib/
+git checkout '4.3.0'
+cd ..
+cd opencv
+mkdir build
+cd build
+cmake -D CMAKE_BUILD_TYPE=RELEASE -D WITH_TBB=OFF -D WITH_QT=ON -D WITH_OPENGL=ON -D OPENCV_EXTRA_MODULES_PATH=../../opencv_contrib/modules -D OPENCV_GENERATE_PKGCONFIG=ON -D BUILD_opencv_python2=OFF -D BUILD_opencv_python3=ON -G "MSYS Makefiles" .. 
+make -j4 -i    (-i ignores errors on MSYS2 which happens for some reason)
+make install -i
+```
+
+10) Install ReSVG (SVG rasterizing)
+
+``` 
+git clone https://github.com/RazrFalcon/resvg
+cd resvg/crates/c-api
+QT_DIR="C:\\msys64\\mingw64\\" cargo build --verbose --release
+  **OR**
+QT_DIR="C:\\msys64\\mingw32\\" cargo build --verbose --release
+
+cd ../../
+
+# copy all required files into the system directories
+cp target/release/resvg.dll /usr/lib/
+mkdir -p /usr/include/resvg/
+cp crates/c-api/*.h /usr/include/resvg/
+```
+
 
 ## Manual Dependencies
 
@@ -258,12 +302,6 @@ Create an environment variable called DXSDK_DIR and set the value to `C:\Program
    * http://www.mega-nerd.com/libsndfile/#Download
    * Download and Install the Win32 Setup program.
    * Create an environment variable called SNDFILE_DIR and set the value to `C:\Program Files\libsndfile`. This environment variable will be used by CMake to find the binary and header files.
-
-### libzmq
-   * http://zeromq.org/intro:get-the-software
-   * Download source code (zip)
-   * Follow their instructions, and build with mingw
-   * Create an environment variable called ZMQDIR and set the value to `C:\libzmq\build\` (the location of the compiled version). This environment variable will be used by CMake to find the binary and header files.
 
 ## Windows Build Instructions (libopenshot-audio)
 In order to compile libopenshot-audio, launch a command prompt and enter the following commands. This does not require the MSYS2 prompt, but it should work in both the Windows command prompt and the MSYS2 prompt.

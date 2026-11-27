@@ -1,3 +1,9 @@
+<!--
+© OpenShot Studios, LLC
+
+SPDX-License-Identifier: LGPL-3.0-or-later
+-->
+
 # Building libopenshot for Linux
 
 ## Getting Started
@@ -28,6 +34,11 @@ list below to help distinguish between them.
   * http://www.ffmpeg.org/ `(Library)`
   * This library is used to decode and encode video, audio, and image files.  It is also used to obtain information about media files, such as frame rate, sample rate, aspect ratio, and other common attributes.
 
+### PipeWire and xdg-desktop-portal (libpipewire, libspa, GIO)
+  * https://pipewire.org/ `(Library)`
+  * https://flatpak.github.io/xdg-desktop-portal/ `(Runtime Service)`
+  * These libraries and services are used for Wayland screen capture. The development packages are needed at build time, and a desktop portal implementation must be available at runtime.
+
 ### ImageMagick++ (libMagick++, libMagickWand, libMagickCore)
   * http://www.imagemagick.org/script/magick++.php `(Library)`
   * This library is **optional**, and used to decode and encode images.
@@ -38,7 +49,8 @@ list below to help distinguish between them.
 
 ### Qt 5 (libqt5)
   * http://www.qt.io/qt5/ `(Library)`
-  * Qt5 is used to display video, store image data, composite images, apply image effects, and many other utility functions, such as file system manipulation, high resolution timers, etc...
+  * Qt5/Qt6 is used to display video, store image data, composite images, apply image effects, and many other utility functions, such as file system manipulation, high resolution timers, etc...
+  * Use the CMake option `-DUSE_QT6=ON|OFF|AUTO` (default AUTO) to pick a Qt major version; Qt6 builds require CMake 3.16+.
 
 ### CMake (cmake)
   * http://www.cmake.org/ `(Executable)`
@@ -59,10 +71,6 @@ list below to help distinguish between them.
 ### UnitTest++ (libunittest++)
   * https://github.com/unittest-cpp/ `(Library)`
   * This library is used to execute unit tests for libopenshot.  It contains many macros used to keep our unit testing code very clean and simple.
-
-### ZeroMQ (libzmq)
-  * http://zeromq.org/ `(Library)`
-  * This library is used to communicate between libopenshot and other applications (publisher / subscriber). Primarily used to send debug data from libopenshot.
 
 ### OpenMP (-fopenmp)
   * http://openmp.org/wp/ `(Compiler Flag)`
@@ -141,23 +149,36 @@ software packages available to download and install.
                         libavformat-dev \
                         libavresample-dev \
                         libavutil-dev \
+                        libbabl-dev \
                         libfdk-aac-dev \
                         libfreetype6-dev \
                         libjsoncpp-dev \
                         libmagick++-dev \
                         libopenshot-audio-dev \
+                        libpipewire-0.3-dev \
+                        libspa-0.2-dev \
                         libswscale-dev \
                         libunittest++-dev \
                         libxcursor-dev \
                         libxinerama-dev \
                         libxrandr-dev \
-                        libzmq3-dev \
                         pkg-config \
                         python3-dev \
                         qtbase5-dev \
                         qtmultimedia5-dev \
-                        swig
+                        swig \
+                        xdg-desktop-portal \
+                        xdg-desktop-portal-gtk \
+                        python3-pyqt5.qtwebengine
+                        
 ```
+
+If you want to build against Qt6 on Ubuntu 24.04 or newer, install the Qt6 dev stack instead and configure with the default `USE_QT6=AUTO` (prefers Qt6 when available) or `-DUSE_QT6=ON` to force it:
+
+```
+sudo apt install qt6-base-dev qt6-base-dev-tools qt6-tools-dev qt6-svg-dev
+```
+
 
 ## Linux Build Instructions (libopenshot-audio)
 To compile libopenshot-audio, we need to go through a few additional steps to manually build and 

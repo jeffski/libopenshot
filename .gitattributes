@@ -1,2 +1,9 @@
+# © OpenShot Studios, LLC
+#
+# SPDX-License-Identifier: LGPL-3.0-or-later
+
 * text=auto
 
+
+# Keep bundled upstream code separate from the implementation during PR review.
+thirdparty/signalsmith/** linguist-vendored

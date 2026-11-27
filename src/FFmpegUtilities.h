@@ -6,31 +6,14 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2024 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_FFMPEG_UTILITIES_H
 #define OPENSHOT_FFMPEG_UTILITIES_H
 
+#include "Exceptions.h"
 #include "OpenShotVersion.h"  // For FFMPEG_USE_SWRESAMPLE
 
 // Required for libavformat to build on Windows
@@ -51,10 +34,13 @@
 #define USE_SW FFMPEG_USE_SWRESAMPLE
 #endif
 
+#define HAVE_CH_LAYOUT (LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 28, 100))
+
 // Include the FFmpeg headers
 extern "C" {
     #include <libavcodec/avcodec.h>
     #include <libavformat/avformat.h>
+    #include <libavutil/display.h>
 
 #if (LIBAVFORMAT_VERSION_MAJOR >= 57)
     #include <libavutil/hwcontext.h> //PM
@@ -81,6 +67,10 @@ extern "C" {
     // channel header refactored
 #if LIBAVFORMAT_VERSION_MAJOR >= 54
     #include <libavutil/channel_layout.h>
+#endif
+
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(55, 0, 0)
+    #include <libavutil/spherical.h>
 #endif
 
 #if IS_FFMPEG_3_2
@@ -132,6 +122,23 @@ inline static const std::string av_err2string(int errnum)
 #ifndef PIX_FMT_YUV444P
     #define PIX_FMT_YUV444P AV_PIX_FMT_YUV444P
 #endif
+#ifndef AV_PROFILE_H264_BASELINE
+    #ifdef FF_PROFILE_H264_BASELINE
+        #define AV_PROFILE_H264_BASELINE FF_PROFILE_H264_BASELINE
+    #endif
+#endif
+#ifndef AV_PROFILE_H264_CONSTRAINED
+    #ifdef FF_PROFILE_H264_CONSTRAINED
+        #define AV_PROFILE_H264_CONSTRAINED FF_PROFILE_H264_CONSTRAINED
+    #endif
+#endif
+#ifndef AV_PROFILE_H264_CONSTRAINED_BASELINE
+    #if defined(AV_PROFILE_H264_BASELINE) && defined(AV_PROFILE_H264_CONSTRAINED)
+        #define AV_PROFILE_H264_CONSTRAINED_BASELINE (AV_PROFILE_H264_BASELINE | AV_PROFILE_H264_CONSTRAINED)
+    #elif defined(FF_PROFILE_H264_CONSTRAINED_BASELINE)
+        #define AV_PROFILE_H264_CONSTRAINED_BASELINE FF_PROFILE_H264_CONSTRAINED_BASELINE
+    #endif
+#endif
 
 // Does ffmpeg pixel format contain an alpha channel?
 inline static bool ffmpeg_has_alpha(PixelFormat pix_fmt) {
@@ -139,6 +146,98 @@ inline static bool ffmpeg_has_alpha(PixelFormat pix_fmt) {
     return bool(fmt_desc->flags & AV_PIX_FMT_FLAG_ALPHA);
 }
 
+// Allocate and populate an AVCodecContext from stream codec parameters.
+inline static AVCodecContext* ffmpeg_get_codec_context(AVStream *av_stream, const AVCodec *av_codec) {
+    AVCodecContext *context = avcodec_alloc_context3(av_codec);
+    if (context)
+        avcodec_parameters_to_context(context, av_stream->codecpar);
+    return context;
+}
+
+#if HAVE_CH_LAYOUT
+inline static AVChannelLayout ffmpeg_default_channel_layout(int channels) {
+    AVChannelLayout layout = {};
+    if (channels > 0)
+        av_channel_layout_default(&layout, channels);
+    return layout;
+}
+
+inline static AVChannelLayout ffmpeg_get_valid_channel_layout(
+        const AVChannelLayout &layout, int fallback_channels) {
+    AVChannelLayout normalized = {};
+    if (layout.nb_channels > 0 && av_channel_layout_check(&layout) == 1) {
+        av_channel_layout_copy(&normalized, &layout);
+        return normalized;
+    }
+    return ffmpeg_default_channel_layout(fallback_channels);
+}
+
+inline static uint64_t ffmpeg_channel_layout_mask(const AVChannelLayout &layout) {
+    return layout.order == AV_CHANNEL_ORDER_NATIVE ? layout.u.mask : 0;
+}
+#endif
+
+// Access stream side data across FFmpeg API changes.
+inline static const uint8_t* ffmpeg_stream_get_side_data(
+        const AVStream *stream, enum AVPacketSideDataType type, size_t *size) {
+#if (LIBAVFORMAT_VERSION_MAJOR >= 61)
+    const AVPacketSideData *side_data = av_packet_side_data_get(
+            stream->codecpar->coded_side_data,
+            stream->codecpar->nb_coded_side_data,
+            type);
+    if (!side_data) {
+        if (size)
+            *size = 0;
+        return nullptr;
+    }
+    if (size)
+        *size = side_data->size;
+    return side_data->data;
+#else
+    #if defined(__GNUC__) || defined(__clang__)
+        #pragma GCC diagnostic push
+        #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+    #endif
+    #if (LIBAVFORMAT_VERSION_MAJOR >= 59)
+        const uint8_t *data = av_stream_get_side_data(stream, type, size);
+    #else
+        int old_size = 0;
+        const uint8_t *data = av_stream_get_side_data(
+                const_cast<AVStream*>(stream), type, &old_size);
+        if (size)
+            *size = old_size >= 0 ? static_cast<size_t>(old_size) : 0;
+    #endif
+    #if defined(__GNUC__) || defined(__clang__)
+        #pragma GCC diagnostic pop
+    #endif
+    return data;
+#endif
+}
+
+// Add stream side data across FFmpeg API changes.
+inline static int ffmpeg_stream_add_side_data(
+        AVStream *stream, enum AVPacketSideDataType type, uint8_t *data, size_t size) {
+#if (LIBAVFORMAT_VERSION_MAJOR >= 61)
+    AVPacketSideData *side_data = av_packet_side_data_add(
+            &stream->codecpar->coded_side_data,
+            &stream->codecpar->nb_coded_side_data,
+            type,
+            data,
+            size,
+            0);
+    return side_data ? 0 : AVERROR(ENOMEM);
+#else
+    #if defined(__GNUC__) || defined(__clang__)
+        #pragma GCC diagnostic push
+        #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+    #endif
+    int result = av_stream_add_side_data(stream, type, data, size);
+    #if defined(__GNUC__) || defined(__clang__)
+        #pragma GCC diagnostic pop
+    #endif
+    return result;
+#endif
+}
 // FFmpeg's libavutil/common.h defines an RSHIFT incompatible with Ruby's
 // definition in ruby/config.h, so we move it to FF_RSHIFT
 #ifdef RSHIFT
@@ -175,17 +274,14 @@ inline static bool ffmpeg_has_alpha(PixelFormat pix_fmt) {
     #define MY_INPUT_BUFFER_PADDING_SIZE AV_INPUT_BUFFER_PADDING_SIZE
     #define AV_ALLOCATE_FRAME() av_frame_alloc()
     #define AV_ALLOCATE_IMAGE(av_frame, pix_fmt, width, height) \
-            av_image_alloc(av_frame->data, av_frame->linesize, width, height, pix_fmt, 1)
+            av_image_alloc(av_frame->data, av_frame->linesize, width, height, pix_fmt, 32)
     #define AV_RESET_FRAME(av_frame) av_frame_unref(av_frame)
     #define AV_FREE_FRAME(av_frame) av_frame_free(av_frame)
     #define AV_FREE_PACKET(av_packet) av_packet_unref(av_packet)
     #define AV_FREE_CONTEXT(av_context) avcodec_free_context(&av_context)
     #define AV_GET_CODEC_TYPE(av_stream) av_stream->codecpar->codec_type
     #define AV_FIND_DECODER_CODEC_ID(av_stream) av_stream->codecpar->codec_id
-    #define AV_GET_CODEC_CONTEXT(av_stream, av_codec) \
-            ({ AVCodecContext *context = avcodec_alloc_context3(av_codec); \
-               avcodec_parameters_to_context(context, av_stream->codecpar); \
-               context; })
+    #define AV_GET_CODEC_CONTEXT(av_stream, av_codec) ffmpeg_get_codec_context(av_stream, av_codec)
     #define AV_GET_CODEC_PAR_CONTEXT(av_stream, av_codec) av_codec;
     #define AV_GET_CODEC_FROM_STREAM(av_stream,codec_in)
     #define AV_GET_CODEC_ATTRIBUTES(av_stream, av_context) av_stream->codecpar
@@ -200,13 +296,8 @@ inline static bool ffmpeg_has_alpha(PixelFormat pix_fmt) {
     #define AV_OPTION_SET( av_stream, priv_data, name, value, avcodec) \
             av_opt_set(priv_data, name, value, 0); \
             avcodec_parameters_from_context(av_stream->codecpar, avcodec);
-    #define AV_FORMAT_NEW_STREAM(oc, st_codec_ctx, av_codec, av_st) \
-            av_st = avformat_new_stream(oc, NULL);\
-            if (!av_st) \
-                throw OutOfMemory("Could not allocate memory for the video stream.", path); \
-            c = avcodec_alloc_context3(av_codec); \
-            st_codec_ctx = c; \
-            av_st->codecpar->codec_id = av_codec->id;
+    #define ALLOC_CODEC_CTX(ctx, codec, stream) \
+            ctx = avcodec_alloc_context3(codec);
     #define AV_COPY_PARAMS_FROM_CONTEXT(av_stream, av_codec_ctx) \
             avcodec_parameters_from_context(av_stream->codecpar, av_codec_ctx);
 
@@ -218,17 +309,14 @@ inline static bool ffmpeg_has_alpha(PixelFormat pix_fmt) {
     #define MY_INPUT_BUFFER_PADDING_SIZE FF_INPUT_BUFFER_PADDING_SIZE
     #define AV_ALLOCATE_FRAME() av_frame_alloc()
     #define AV_ALLOCATE_IMAGE(av_frame, pix_fmt, width, height) \
-            av_image_alloc(av_frame->data, av_frame->linesize, width, height, pix_fmt, 1)
+            av_image_alloc(av_frame->data, av_frame->linesize, width, height, pix_fmt, 32)
     #define AV_RESET_FRAME(av_frame) av_frame_unref(av_frame)
     #define AV_FREE_FRAME(av_frame) av_frame_free(av_frame)
     #define AV_FREE_PACKET(av_packet) av_packet_unref(av_packet)
     #define AV_FREE_CONTEXT(av_context) avcodec_free_context(&av_context)
     #define AV_GET_CODEC_TYPE(av_stream) av_stream->codecpar->codec_type
     #define AV_FIND_DECODER_CODEC_ID(av_stream) av_stream->codecpar->codec_id
-    #define AV_GET_CODEC_CONTEXT(av_stream, av_codec) \
-            ({ AVCodecContext *context = avcodec_alloc_context3(av_codec); \
-               avcodec_parameters_to_context(context, av_stream->codecpar); \
-               context; })
+    #define AV_GET_CODEC_CONTEXT(av_stream, av_codec) ffmpeg_get_codec_context(av_stream, av_codec)
     #define AV_GET_CODEC_PAR_CONTEXT(av_stream, av_codec) av_codec;
     #define AV_GET_CODEC_FROM_STREAM(av_stream,codec_in)
     #define AV_GET_CODEC_ATTRIBUTES(av_stream, av_context) av_stream->codecpar
@@ -244,16 +332,8 @@ inline static bool ffmpeg_has_alpha(PixelFormat pix_fmt) {
     #define AV_OPTION_SET( av_stream, priv_data, name, value, avcodec) \
             av_opt_set(priv_data, name, value, 0); \
             avcodec_parameters_from_context(av_stream->codecpar, avcodec);
-    #define AV_FORMAT_NEW_STREAM(oc, st_codec, av_codec, av_st) \
-            av_st = avformat_new_stream(oc, NULL);\
-            if (!av_st) \
-                throw OutOfMemory("Could not allocate memory for the video stream.", path); \
-            _Pragma ("GCC diagnostic push"); \
-            _Pragma ("GCC diagnostic ignored \"-Wdeprecated-declarations\""); \
-            avcodec_get_context_defaults3(av_st->codec, av_codec); \
-            c = av_st->codec; \
-            _Pragma ("GCC diagnostic pop"); \
-            st_codec = c;
+    #define ALLOC_CODEC_CTX(ctx, codec, stream) \
+            ctx = avcodec_alloc_context3(codec);
     #define AV_COPY_PARAMS_FROM_CONTEXT(av_stream, av_codec) \
             avcodec_parameters_from_context(av_stream->codecpar, av_codec);
 
@@ -284,12 +364,9 @@ inline static bool ffmpeg_has_alpha(PixelFormat pix_fmt) {
     #define AV_OUTPUT_CONTEXT(output_context, path) oc = avformat_alloc_context()
     #define AV_OPTION_FIND(priv_data, name) av_opt_find(priv_data, name, NULL, 0, 0)
     #define AV_OPTION_SET(av_stream, priv_data, name, value, avcodec) av_opt_set (priv_data, name, value, 0)
-    #define AV_FORMAT_NEW_STREAM( oc,  av_context,  av_codec, av_st) \
-            av_st = avformat_new_stream(oc, av_codec); \
-            if (!av_st) \
-                throw OutOfMemory("Could not allocate memory for the video stream.", path); \
+    #define ALLOC_CODEC_CTX(ctx, av_codec, stream) \
             avcodec_get_context_defaults3(av_st->codec, av_codec); \
-            c = av_st->codec;
+            ctx = av_st->codec;
     #define AV_COPY_PARAMS_FROM_CONTEXT(av_stream, av_codec)
 
 #else
@@ -319,14 +396,91 @@ inline static bool ffmpeg_has_alpha(PixelFormat pix_fmt) {
     #define AV_OUTPUT_CONTEXT(output_context, path) oc = avformat_alloc_context()
     #define AV_OPTION_FIND(priv_data, name) av_opt_find(priv_data, name, NULL, 0, 0)
     #define AV_OPTION_SET(av_stream, priv_data, name, value, avcodec) av_opt_set (priv_data, name, value, 0)
-    #define AV_FORMAT_NEW_STREAM( oc,  av_context,  av_codec, av_st) \
-            av_st = avformat_new_stream(oc, av_codec); \
-            if (!av_st) \
-                throw OutOfMemory("Could not allocate memory for the video stream.", path); \
-            avcodec_get_context_defaults3(av_st->codec, av_codec); \
-            c = av_st->codec;
+    #define ALLOC_CODEC_CTX(ctx, av_codec, stream) \
+            avcodec_get_context_defaults3(stream->codec, av_codec); \
+            ctx = stream->codec;
     #define AV_COPY_PARAMS_FROM_CONTEXT(av_stream, av_codec)
 #endif
 
+// Aligned memory allocation helpers (cross-platform)
+#if defined(_WIN32)
+#include <malloc.h>
+#endif
+
+// FFmpeg 7.1 introduced this API at libavcodec 61.13.100. FFmpeg 7.0
+// still needs the AVCodec fields, as do older supported releases.
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 13, 100)
+template<typename T>
+inline static const T* ffmpeg_codec_config(const AVCodec* codec,
+                                         const AVCodecContext* context,
+                                         AVCodecConfig config) {
+    const void* values = nullptr;
+    const int result = avcodec_get_supported_config(context, codec, config, 0,
+                                                    &values, nullptr);
+    // A successful NULL list means unrestricted support. A failed query must
+    // not silently turn into unrestricted support or a default format.
+    if (result < 0)
+        throw openshot::InvalidCodec("Could not query codec capabilities: " + av_err2string(result), "");
+    return static_cast<const T*>(values);
+}
+#endif
+
+inline static const AVPixelFormat* ffmpeg_codec_pix_fmts(const AVCodec* codec,
+                                                        const AVCodecContext* context) {
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 13, 100)
+    return ffmpeg_codec_config<AVPixelFormat>(codec, context, AV_CODEC_CONFIG_PIX_FORMAT);
+#else
+    (void)context;
+    return codec->pix_fmts;
+#endif
+}
+
+inline static const int* ffmpeg_codec_sample_rates(const AVCodec* codec,
+                                                  const AVCodecContext* context) {
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 13, 100)
+    return ffmpeg_codec_config<int>(codec, context, AV_CODEC_CONFIG_SAMPLE_RATE);
+#else
+    (void)context;
+    return codec->supported_samplerates;
+#endif
+}
+
+inline static const AVSampleFormat* ffmpeg_codec_sample_fmts(const AVCodec* codec,
+                                                            const AVCodecContext* context) {
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 13, 100)
+    return ffmpeg_codec_config<AVSampleFormat>(codec, context, AV_CODEC_CONFIG_SAMPLE_FORMAT);
+#else
+    (void)context;
+    return codec->sample_fmts;
+#endif
+}
+
+// AVChannelLayout itself is unavailable before FFmpeg 5.1. Guard the whole
+// declaration, not only the function body.
+#if HAVE_CH_LAYOUT
+inline static const AVChannelLayout* ffmpeg_codec_ch_layouts(const AVCodec* codec,
+                                                            const AVCodecContext* context) {
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 13, 100)
+    return ffmpeg_codec_config<AVChannelLayout>(codec, context, AV_CODEC_CONFIG_CHANNEL_LAYOUT);
+#else
+    (void)context;
+    return codec->ch_layouts;
+#endif
+}
+#endif
+
+inline static void* aligned_malloc(size_t size, size_t alignment = 32)
+{
+#if defined(_WIN32)
+    return _aligned_malloc(size, alignment);
+#elif defined(__APPLE__) || defined(__linux__)
+    void* ptr = nullptr;
+    if (posix_memalign(&ptr, alignment, size) != 0)
+        return nullptr;
+    return ptr;
+#else
+#error "aligned_malloc not implemented on this platform"
+#endif
+}
 
 #endif  // OPENSHOT_FFMPEG_UTILITIES_H

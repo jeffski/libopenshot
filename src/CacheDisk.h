@@ -6,39 +6,19 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_CACHE_DISK_H
 #define OPENSHOT_CACHE_DISK_H
 
-#include <map>
-#include <deque>
-#include <memory>
 #include "CacheBase.h"
-#include "Frame.h"
+
 #include <QDir>
 
 namespace openshot {
+	class Frame;
 
 	/**
 	 * @brief This class is a disk-based cache manager for Frame objects.
@@ -55,22 +35,13 @@ namespace openshot {
 		std::string image_format;
 		float image_quality;
 		float image_scale;
-
 		int64_t frame_size_bytes; ///< The size of the cached frame in bytes
-		bool needs_range_processing; ///< Something has changed, and the range data needs to be re-calculated
-		std::string json_ranges; ///< JSON ranges of frame numbers
-		std::vector<int64_t> ordered_frame_numbers; ///< Ordered list of frame numbers used by cache
-		std::map<int64_t, int64_t> frame_ranges;	///< This map holds the ranges of frames, useful for quickly displaying the contents of the cache
-		int64_t range_version; ///< The version of the JSON range data (incremented with each change)
 
 		/// Clean up cached frames that exceed the max number of bytes
 		void CleanUp();
 
 		/// Init path directory
 		void InitPath(std::string cache_path);
-
-		/// Calculate ranges of frames
-		void CalculateRanges();
 
 	public:
 		/// @brief Default constructor, no max bytes
@@ -98,12 +69,19 @@ namespace openshot {
 		/// Clear the cache of all frames
 		void Clear();
 
+		/// @brief Check if frame is already contained in cache
+		/// @param frame_number The frame number to be checked
+		bool Contains(int64_t frame_number);
+
 		/// Count the frames in the queue
 		int64_t Count();
 
 		/// @brief Get a frame from the cache
 		/// @param frame_number The frame number of the cached frame
 		std::shared_ptr<openshot::Frame> GetFrame(int64_t frame_number);
+
+		/// @brief Get an array of all Frames
+		std::vector<std::shared_ptr<openshot::Frame>> GetFrames();
 
 		/// Gets the maximum bytes value
 		int64_t GetBytes();
@@ -113,7 +91,7 @@ namespace openshot {
 
 		/// @brief Move frame to front of queue (so it lasts longer)
 		/// @param frame_number The frame number of the cached frame
-		void MoveToFront(int64_t frame_number);
+		void Touch(int64_t frame_number);
 
 		/// @brief Remove a specific frame
 		/// @param frame_number The frame number of the cached frame

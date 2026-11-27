@@ -7,41 +7,27 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifndef OPENSHOT_OBJECT_DETECTION_EFFECT_H
 #define OPENSHOT_OBJECT_DETECTION_EFFECT_H
 
-#include "../EffectBase.h"
+#include "EffectBase.h"
 
-#include <cmath>
-#include <stdio.h>
 #include <memory>
-#include <opencv2/opencv.hpp>
-#include "../Color.h"
-#include "../Json.h"
-#include "../KeyFrame.h"
-#include "protobuf_messages/objdetectdata.pb.h"
+
+#include "OpenCVUtilities.h"
+
+#include "Json.h"
+#include "KeyFrame.h"
+#include "TrackedObjectBBox.h"
+
+namespace openshot {
+	class TrackedObjectBBox;
+    struct DetectionGlyphCache;
+}
 
 // Struct that stores the detected bounding boxes for all the clip frames
 struct DetectionData{
@@ -51,57 +37,65 @@ struct DetectionData{
         std::vector<float> _confidences,
         std::vector<cv::Rect_<float>> _boxes,
         size_t _frameId,
-        std::vector<int> _objectIds)
+        std::vector<int> _objectIds,
+        std::vector<openshot::ObjectMaskData> _masks = {})
     {
         classIds = _classIds;
         confidences = _confidences;
         boxes = _boxes;
         frameId = _frameId;
         objectIds = _objectIds;
+        masks = _masks;
     }
     size_t frameId;
     std::vector<int> classIds;
     std::vector<float> confidences;
     std::vector<cv::Rect_<float>> boxes;
     std::vector<int> objectIds;
+    std::vector<openshot::ObjectMaskData> masks;
 };
 
 namespace openshot
 {
+    // Forward decls
+    class Frame;
+
     /**
      * @brief This effect displays all the detected objects on a clip.
      */
     class ObjectDetection : public EffectBase
     {
     private:
+        std::shared_ptr<DetectionGlyphCache> gpu_glyphs;
+        std::shared_ptr<Frame> RenderFrame(std::shared_ptr<Frame> frame,int64_t frame_number,bool allow_gpu);
         std::string protobuf_data_path;
         std::map<size_t, DetectionData> detectionsData;
         std::vector<std::string> classNames;
-
         std::vector<cv::Scalar> classesColor;
-        
-        /// Draw class name and confidence score on top of the bounding box
+
+        /// Draw ALL class name and ID #'s on top of the bounding boxes (or hide all text)
         Keyframe display_box_text;
+
+        /// Draw ALL tracked bounding boxes (or hide all boxes)
+        Keyframe display_boxes;
+
         /// Minimum confidence value to display the detected objects
-        float confidence_threshold = 0.5; 
+        float confidence_threshold = 0.25;
+
         /// Contain the user selected classes for visualization
         std::vector<std::string> display_classes;
         std::string class_filter;
 
+        /// Last explicit "All Objects" settings, used for stable UI readback
+        std::shared_ptr<TrackedObjectBBox> allObjectsProperties;
+
         /// Init effect settings
         void init_effect_details();
-        /// Draw bounding box with class and score text 
-        void drawPred(int classId, float conf, cv::Rect2d box, cv::Mat& frame, int objectNumber, std::vector<int> color, float alpha, 
-                        int thickness, bool is_background, bool draw_text);
-        /// Draw rotated rectangle with alpha channel
-        void DrawRectangleRGBA(cv::Mat &frame_image, cv::RotatedRect box, std::vector<int> color, float alpha, int thickness, bool is_background);
-
 
     public:
+    bool RendersOnVulkan() const override { return true; }
         /// Index of the Tracked Object that was selected to modify it's properties
         int selectedObjectIndex;
-
-        ObjectDetection(std::string clipTrackerDataPath);
 
         /// Default constructor
         ObjectDetection();
@@ -125,6 +119,12 @@ namespace openshot
         /// Get the indexes and IDs of all visible objects in the given frame
         std::string GetVisibleObjects(int64_t frame_number) const override;
 
+        /// Generate a black/white mask from visible detected bounding boxes.
+        std::shared_ptr<QImage> TrackedObjectMask(std::shared_ptr<QImage> target_image, int64_t frame_number) const override;
+
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+        std::shared_ptr<const FrameImage> TrackedObjectMaskSurface(std::shared_ptr<const FrameImage> target,int64_t frame_number) const override;
+#endif
         // Get and Set JSON methods
         std::string Json() const override; ///< Generate JSON string of this object
         void SetJson(const std::string value) override; ///< Load JSON string into this object

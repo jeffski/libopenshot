@@ -7,27 +7,9 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #pragma once
 
@@ -41,39 +23,60 @@
 #include "Json.h"
 #include "ProcessingController.h"
 #include "Clip.h"
-#include "protobuf_messages/objdetectdata.pb.h"
 
 #include "sort_filter/sort.hpp"
 
+// Forward decl
+namespace pb_objdetect {
+    class Frame;
+}
+
 namespace openshot
 {
+    struct CVObjectMaskData{
+        int width = 0;
+        int height = 0;
+        std::vector<uint32_t> rle;
+
+        bool HasData() const { return width > 0 && height > 0 && !rle.empty(); }
+    };
+
+    struct CVTrackedMaskData{
+        size_t frameId = 0;
+        CVObjectMaskData mask;
+        cv::Rect_<float> box;
+    };
+
     // Stores the detected object bounding boxes and its properties.
     struct CVDetectionData{
         CVDetectionData(){}
         CVDetectionData(
-            std::vector<int> _classIds, 
+            std::vector<int> _classIds,
             std::vector<float> _confidences,
-            std::vector<cv::Rect_<float>> _boxes, 
+            std::vector<cv::Rect_<float>> _boxes,
             size_t _frameId,
-            std::vector<int> _objectIds)
+            std::vector<int> _objectIds,
+            std::vector<CVObjectMaskData> _masks = {})
         {
             classIds = _classIds;
             confidences = _confidences;
             boxes = _boxes;
             frameId = _frameId;
             objectIds = _objectIds;
+            masks = _masks;
         }
         size_t frameId;
         std::vector<int> classIds;
         std::vector<float> confidences;
         std::vector<cv::Rect_<float>> boxes;
         std::vector<int> objectIds;
+        std::vector<CVObjectMaskData> masks;
     };
 
     /**
      * @brief This class runs trought a clip to detect objects and returns the bounding boxes and its properties.
      *
-     * Object detection is performed using YoloV3 model with OpenCV DNN module
+     * Object detection is performed using a supported YOLO ONNX model with OpenCV DNN module.
      */
     class CVObjectDetection{
 
@@ -84,12 +87,15 @@ namespace openshot
         float confThreshold, nmsThreshold;
 
         std::string classesFile;
-        std::string modelConfiguration;
-        std::string modelWeights;
+        std::string modelPath;
         std::string processingDevice;
         std::string protobuf_data_path;
+        int inpWidth;
+        int inpHeight;
+        bool generateMasks;
 
         SortTracker sort;
+        std::map<int, CVTrackedMaskData> recentObjectMasks;
 
         uint progress;
 
@@ -111,6 +117,8 @@ namespace openshot
         // Remove the bounding boxes with low confidence using non-maxima suppression
         void postprocess(const cv::Size &frameDims, const std::vector<cv::Mat>& out, size_t frame_number);
 
+        void NormalizeTrackedClasses();
+
         // Get the names of the output layers
         std::vector<cv::String> getOutputsNames(const cv::dnn::Net& net);
 
@@ -119,6 +127,8 @@ namespace openshot
         std::map<size_t, CVDetectionData> detectionsData;
 
         CVObjectDetection(std::string processInfoJson, ProcessingController &processingController);
+
+        static std::string ValidateONNXModel(std::string modelPath);
 
         // Iterate over a clip object and run inference for each video frame
         void detectObjectsClip(openshot::Clip &video, size_t start=0, size_t end=0, bool process_interval=false);

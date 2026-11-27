@@ -6,37 +6,55 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include <memory>
 #include <QDir>
 
-#include <catch2/catch.hpp>
+#include "openshot_catch.h"
 
 #include "CacheMemory.h"
+#include "Frame.h"
 #include "Json.h"
 
 using namespace openshot;
+
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+namespace {
+class CacheTestSurface : public FrameImage {
+public:
+	mutable int reads = 0;
+	int GetWidth() const override { return 16; }
+	int GetHeight() const override { return 16; }
+	int64_t GetBytes() const override { return 1024; }
+	QImage Materialize() const override {
+		++reads;
+		QImage image(16, 16, QImage::Format_RGBA8888_Premultiplied);
+		image.fill(Qt::red);
+		return image;
+	}
+};
+}
+TEST_CASE("Hardware cache honors byte budget below the CPU frame floor", "[cache][gpu]") {
+	CacheMemory cache;
+	auto surface = std::make_shared<CacheTestSurface>();
+	for (int i = 1; i <= 5; ++i) {
+		auto frame = std::make_shared<Frame>();
+		frame->number = i;
+		frame->AddDeferredImage(surface);
+		cache.SetMaxBytes(frame->GetBytes() * 2);
+		cache.Add(frame);
+	}
+	CHECK(cache.Count() == 2);
+	CHECK(cache.GetBytes() <= cache.GetMaxBytes());
+	CHECK(surface->reads == 0);
+	CHECK_FALSE(cache.GetFrame(1));
+	REQUIRE(cache.GetFrame(5));
+	CHECK(cache.GetFrame(5)->GetImage()->pixelColor(0, 0) == QColor(Qt::red));
+}
+#endif
 
 TEST_CASE( "default constructor", "[libopenshot][cachememory]" )
 {

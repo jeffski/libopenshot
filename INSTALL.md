@@ -1,3 +1,9 @@
+<!--
+© OpenShot Studios, LLC
+
+SPDX-License-Identifier: LGPL-3.0-or-later
+-->
+
 ## Detailed Install Instructions
 
 Operating system specific install instructions are located in:
@@ -44,15 +50,9 @@ Libraries and executables have been labeled in the list below to help distinguis
 #### Qt 5 (libqt5)
 *   <http://www.qt.io/qt5/> **(Library)**
 
-*   Qt5 is used to display video, store image data, composite images,
+*   Qt5/Qt6 is used to display video, store image data, composite images,
     apply image effects, and many other utility functions,
     such as file system manipulation, high resolution timers, etc.
-
-#### ZeroMQ (libzmq)
-*   <http://zeromq.org/> **(Library)**
-
-*   This library is used to communicate between libopenshot and other applications (publisher / subscriber).
-    Primarily used to send debug data from libopenshot.
 
 #### OpenMP (`-fopenmp`)
 *   <http://openmp.org/wp/> **(Compiler Flag)**
@@ -83,8 +83,8 @@ Libraries and executables have been labeled in the list below to help distinguis
 *   <http://www.stack.nl/~dimitri/doxygen/> **(Executable)**
 *   This executable is used to auto-generate the documentation used by libopenshot.
 
-#### UnitTest++ (libunittest++)
-*   <https://github.com/unittest-cpp/> **(Library)**
+#### Catch2 (catch)
+*   <https://github.com/catchorg/Catch2/> **(Library)**
 
 *   This library is used to execute unit tests for libopenshot.
     It contains many macros used to keep our unit testing code clean and easy-to-follow.
@@ -195,6 +195,7 @@ Following are some of the flags you might need to set when generating your build
 *   `-DCMAKE_PREFIX_PATH=/extra/path/to/search/for/libraries/`
 *   `-DUSE_SYSTEM_JSONCPP=0` (default: auto if discovered)
 *   `-DENABLE_MAGICK=0` (default: auto if discovered)
+*   `-DUSE_QT6=AUTO|ON|OFF` (default: `AUTO`; prefers Qt6 when available and CMake ≥3.16, `ON` forces Qt6, `OFF` forces Qt5)
 
 #### Options to compile bindings for a specific Python installation
 *   `-DPYTHON_INCLUDE_DIR=/location/of/python/includes/`

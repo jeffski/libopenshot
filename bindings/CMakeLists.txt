@@ -4,25 +4,9 @@
 #
 # @section LICENSE
 #
-# Copyright (c) 2008-2019 OpenShot Studios, LLC
-# <http://www.openshotstudios.com/>. This file is part of
-# OpenShot Library (libopenshot), an open-source project dedicated to 
-# delivering high quality video editing and animation solutions to the 
-# world. For more information visit <http://www.openshot.org/>.
+# Copyright (c) 2008-2024 OpenShot Studios, LLC
 #
-# OpenShot Library (libopenshot) is free software: you can redistribute it
-# and/or modify it under the terms of the GNU Lesser General Public License
-# as published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# OpenShot Library (libopenshot) is distributed in the hope that it will be
-# useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU Lesser General Public License for more details.
-#
-# You should have received a copy of the GNU Lesser General Public License
-# along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
-################################################################################
+# SPDX-License-Identifier: LGPL-3.0-or-later
 
 IF(NOT DEFINED ENABLE_PYTHON)
     SET(ENABLE_PYTHON 1)
@@ -30,6 +14,14 @@ ENDIF()
 
 IF(NOT DEFINED ENABLE_RUBY)
     SET(ENABLE_RUBY 1)
+ENDIF()
+
+IF(NOT DEFINED ENABLE_JAVA)
+    SET(ENABLE_JAVA 0)
+ENDIF()
+
+IF(NOT DEFINED ENABLE_GODOT)
+    SET(ENABLE_GODOT 0)
 ENDIF()
 
 ############### INCLUDE EACH LANGUAGE BINDING ################
@@ -41,3 +33,10 @@ IF (ENABLE_RUBY)
     add_subdirectory(ruby)
 ENDIF (ENABLE_RUBY)
 
+IF (ENABLE_JAVA)
+    add_subdirectory(java)
+ENDIF (ENABLE_JAVA)
+
+IF (ENABLE_GODOT)
+    add_subdirectory(godot)
+ENDIF (ENABLE_GODOT)

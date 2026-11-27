@@ -7,28 +7,9 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
-
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #ifdef USE_OPENCV
 	#define int64 opencv_broken_int
@@ -41,6 +22,7 @@
 	#include "CVStabilization.h"
     #include "CVTracker.h"
 	#include "CVObjectDetection.h"
+	#include "CVObjectMask.h"
 #endif
 
 #include <thread>
@@ -70,11 +52,15 @@ class ClipProcessingJobs{
 		void stabilizeClip(Clip& clip, ProcessingController& controller);
 		// Apply object detection to clip
 		void detectObjectsClip(Clip& clip, ProcessingController& controller);
+		// Apply object segmentation mask to clip
+		void maskObjectClip(Clip& clip, ProcessingController& controller);
 
 
 	public:
 		// Constructor
 		ClipProcessingJobs(std::string processingType, std::string processInfoJson);
+		static std::string ValidateONNXModel(std::string modelPath);
+		static std::shared_ptr<Frame> PreviewObjectMask(std::string processInfoJson, std::shared_ptr<Frame> frame);
 		// Process clip accordingly to processingType
 		void processClip(Clip& clip, std::string json);
 

@@ -6,34 +6,21 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "VideoRenderer.h"
-
+#include <QtCore/QMetaObject>
+#include <QVariant>
+#include <QtWidgets/QWidget>
 
 VideoRenderer::VideoRenderer(QObject *parent)
-    : QObject(parent)
+    : QObject(parent), override_widget(nullptr)
 {
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+    qRegisterMetaType<std::shared_ptr<openshot::Frame>>();
+#endif
 }
 
 VideoRenderer::~VideoRenderer()
@@ -41,15 +28,65 @@ VideoRenderer::~VideoRenderer()
 }
 
 /// Override QWidget which needs to be painted
-void VideoRenderer::OverrideWidget(int64_t qwidget_address)
+void VideoRenderer::OverrideWidget(uintptr_t qwidget_address)
 {
-	// re-cast QWidget pointer (long) as an actual QWidget
-	override_widget = reinterpret_cast<QWidget*>(qwidget_address);
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+    frame_presenter.store(false);
+#endif
+    if (override_present_connection)
+        QObject::disconnect(override_present_connection);
 
+    // re-cast QWidget pointer (long) as an actual QWidget
+    override_widget = reinterpret_cast<QWidget*>(qwidget_address);
+    if (!override_widget)
+        return;
+
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+    QObject* presenter_object = override_widget;
+    auto presenter = dynamic_cast<FramePresenter*>(presenter_object);
+    if (!presenter) {
+        presenter_object = override_widget->property("openshot_gpu_presenter").value<QObject*>();
+        presenter = dynamic_cast<FramePresenter*>(presenter_object);
+    }
+    if (presenter) {
+        override_present_connection = QObject::connect(
+            this, &VideoRenderer::presentFrame, presenter_object,
+            [presenter](std::shared_ptr<openshot::Frame> frame) {
+                presenter->PresentFrame(frame);
+            }, Qt::QueuedConnection);
+        frame_presenter.store(true);
+        return;
+    }
+#endif
+
+    override_present_connection = QObject::connect(
+        this, &VideoRenderer::present,
+        override_widget,
+        [widget = override_widget](const QImage &image) {
+            QMetaObject::invokeMethod(
+                widget, "present",
+                Qt::DirectConnection,
+                Q_ARG(QImage, image)
+            );
+        },
+        Qt::QueuedConnection
+    );
 }
 
 void VideoRenderer::render(std::shared_ptr<QImage> image)
 {
-    if (image)
-        emit present(*image);
+    if (!image)
+        return;
+
+    emit present(*image);
 }
+
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+void VideoRenderer::renderFrame(const std::shared_ptr<openshot::Frame>& frame)
+{
+    if (frame_presenter.load())
+        emit presentFrame(frame);
+    else
+        openshot::RendererBase::renderFrame(frame);
+}
+#endif

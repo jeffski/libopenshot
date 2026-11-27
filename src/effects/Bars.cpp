@@ -6,32 +6,32 @@
  * @ref License
  */
 
-/* LICENSE
- *
- * Copyright (c) 2008-2019 OpenShot Studios, LLC
- * <http://www.openshotstudios.com/>. This file is part of
- * OpenShot Library (libopenshot), an open-source project dedicated to
- * delivering high quality video editing and animation solutions to the
- * world. For more information visit <http://www.openshot.org/>.
- *
- * OpenShot Library (libopenshot) is free software: you can redistribute it
- * and/or modify it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * OpenShot Library (libopenshot) is distributed in the hope that it will be
- * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with OpenShot Library. If not, see <http://www.gnu.org/licenses/>.
- */
+// Copyright (c) 2008-2019 OpenShot Studios, LLC
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "Bars.h"
 #include "Exceptions.h"
 
+#include <cstring>
+
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+#include "VulkanCompositor.h"
+#include "VulkanFrameImage.h"
+#include "Logger.h"
+#endif
+
 using namespace openshot;
+
+namespace {
+double clamp_margin(double value) {
+	if (value < 0.0)
+		return 0.0;
+	if (value > 1.0)
+		return 1.0;
+	return value;
+}
+}
 
 /// Blank constructor, useful when using Json to load the effect properties
 Bars::Bars() : color("#000000"), left(0.0), top(0.1), right(0.0), bottom(0.1) {
@@ -65,12 +65,36 @@ void Bars::init_effect_details()
 // modified openshot::Frame object
 std::shared_ptr<openshot::Frame> Bars::GetFrame(std::shared_ptr<openshot::Frame> frame, int64_t frame_number)
 {
+#ifdef OPENSHOT_ENABLE_GPU_FRAME
+    if (VulkanRenderingEnabled()) {
+        try {
+            auto surface = frame->GetDeferredImage();
+            if (!surface && ParentClip() && frame->has_image_data)
+                surface = UploadVulkanImage(*frame->GetImage());
+            if (surface) {
+                frame->AddDeferredImage(BarsVulkanImage(surface,
+                    QColor(QString::fromStdString(color.GetColorHex(frame_number))), {
+                        int(clamp_margin(left.GetValue(frame_number)) * surface->GetWidth()),
+                        int(clamp_margin(top.GetValue(frame_number)) * surface->GetHeight()),
+                        int(clamp_margin(right.GetValue(frame_number)) * surface->GetWidth()),
+                        int(clamp_margin(bottom.GetValue(frame_number)) * surface->GetHeight())}));
+                return frame;
+            }
+        } catch (const std::exception& error) {
+            Logger::Instance()->Log(std::string("Vulkan bars CPU fallback: ") + error.what());
+        }
+    }
+#endif
 	// Get the frame's image
 	std::shared_ptr<QImage> frame_image = frame->GetImage();
+	const int width = frame_image->width();
+	const int height = frame_image->height();
+	if (width <= 0 || height <= 0)
+		return frame;
 
 	// Get bar color (and create small color image)
 	auto tempColor = std::make_shared<QImage>(
-		frame_image->width(), 1, QImage::Format_RGBA8888_Premultiplied);
+		width, 1, QImage::Format_RGBA8888_Premultiplied);
 	tempColor->fill(QColor(QString::fromStdString(color.GetColorHex(frame_number))));
 
 	// Get current keyframe values
@@ -84,26 +108,26 @@ std::shared_ptr<openshot::Frame> Bars::GetFrame(std::shared_ptr<openshot::Frame>
 	unsigned char *color_pixels = (unsigned char *) tempColor->bits();
 
 	// Get pixels sizes of all bars
-	int top_bar_height = top_value * frame_image->height();
-	int bottom_bar_height = bottom_value * frame_image->height();
-	int left_bar_width = left_value * frame_image->width();
-	int right_bar_width = right_value * frame_image->width();
+	int top_bar_height = clamp_margin(top_value) * height;
+	int bottom_bar_height = clamp_margin(bottom_value) * height;
+	int left_bar_width = clamp_margin(left_value) * width;
+	int right_bar_width = clamp_margin(right_value) * width;
 
 	// Loop through rows
-	for (int row = 0; row < frame_image->height(); row++) {
+	for (int row = 0; row < height; row++) {
 
 		// Top & Bottom Bar
-		if ((top_bar_height > 0.0 && row <= top_bar_height) || (bottom_bar_height > 0.0 && row >= frame_image->height() - bottom_bar_height)) {
-			memcpy(&pixels[row * frame_image->width() * 4], color_pixels, sizeof(char) * frame_image->width() * 4);
+		if ((top_bar_height > 0.0 && row <= top_bar_height) || (bottom_bar_height > 0.0 && row >= height - bottom_bar_height)) {
+			memcpy(&pixels[row * width * 4], color_pixels, sizeof(char) * width * 4);
 		} else {
 			// Left Bar
 			if (left_bar_width > 0.0) {
-				memcpy(&pixels[row * frame_image->width() * 4], color_pixels, sizeof(char) * left_bar_width * 4);
+				memcpy(&pixels[row * width * 4], color_pixels, sizeof(char) * left_bar_width * 4);
 			}
 
 			// Right Bar
 			if (right_bar_width > 0.0) {
-				memcpy(&pixels[((row * frame_image->width()) + (frame_image->width() - right_bar_width)) * 4], color_pixels, sizeof(char) * right_bar_width * 4);
+				memcpy(&pixels[((row * width) + (width - right_bar_width)) * 4], color_pixels, sizeof(char) * right_bar_width * 4);
 			}
 		}
 	}
@@ -178,26 +202,17 @@ void Bars::SetJsonValue(const Json::Value root) {
 std::string Bars::PropertiesJSON(int64_t requested_frame) const {
 
 	// Generate JSON properties list
-	Json::Value root;
-	root["id"] = add_property_json("ID", 0.0, "string", Id(), NULL, -1, -1, true, requested_frame);
-	root["position"] = add_property_json("Position", Position(), "float", "", NULL, 0, 1000 * 60 * 30, false, requested_frame);
-	root["layer"] = add_property_json("Track", Layer(), "int", "", NULL, 0, 20, false, requested_frame);
-	root["start"] = add_property_json("Start", Start(), "float", "", NULL, 0, 1000 * 60 * 30, false, requested_frame);
-	root["end"] = add_property_json("End", End(), "float", "", NULL, 0, 1000 * 60 * 30, false, requested_frame);
-	root["duration"] = add_property_json("Duration", Duration(), "float", "", NULL, 0, 1000 * 60 * 30, true, requested_frame);
+	Json::Value root = BasePropertiesJSON(requested_frame);
 
 	// Keyframes
 	root["color"] = add_property_json("Bar Color", 0.0, "color", "", &color.red, 0, 255, false, requested_frame);
 	root["color"]["red"] = add_property_json("Red", color.red.GetValue(requested_frame), "float", "", &color.red, 0, 255, false, requested_frame);
 	root["color"]["blue"] = add_property_json("Blue", color.blue.GetValue(requested_frame), "float", "", &color.blue, 0, 255, false, requested_frame);
 	root["color"]["green"] = add_property_json("Green", color.green.GetValue(requested_frame), "float", "", &color.green, 0, 255, false, requested_frame);
-	root["left"] = add_property_json("Left Size", left.GetValue(requested_frame), "float", "", &left, 0.0, 0.5, false, requested_frame);
-	root["top"] = add_property_json("Top Size", top.GetValue(requested_frame), "float", "", &top, 0.0, 0.5, false, requested_frame);
-	root["right"] = add_property_json("Right Size", right.GetValue(requested_frame), "float", "", &right, 0.0, 0.5, false, requested_frame);
-	root["bottom"] = add_property_json("Bottom Size", bottom.GetValue(requested_frame), "float", "", &bottom, 0.0, 0.5, false, requested_frame);
-
-	// Set the parent effect which properties this effect will inherit
-	root["parent_effect_id"] = add_property_json("Parent", 0.0, "string", info.parent_effect_id, NULL, -1, -1, false, requested_frame);
+	root["left"] = add_property_json("Margin: Left", left.GetValue(requested_frame), "float", "", &left, 0.0, 0.5, false, requested_frame);
+	root["top"] = add_property_json("Margin: Top", top.GetValue(requested_frame), "float", "", &top, 0.0, 0.5, false, requested_frame);
+	root["right"] = add_property_json("Margin: Right", right.GetValue(requested_frame), "float", "", &right, 0.0, 0.5, false, requested_frame);
+	root["bottom"] = add_property_json("Margin: Bottom", bottom.GetValue(requested_frame), "float", "", &bottom, 0.0, 0.5, false, requested_frame);
 
 	// Return formatted string
 	return root.toStyledString();

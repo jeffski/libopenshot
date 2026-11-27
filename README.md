@@ -1,3 +1,9 @@
+<!--
+© OpenShot Studios, LLC
+
+SPDX-License-Identifier: LGPL-3.0-or-later
+-->
+
 OpenShot Video Library (libopenshot) is a free, open-source C++ library
 dedicated to delivering high quality video editing, animation, and playback
 solutions to the world.
@@ -46,6 +52,8 @@ Please see [`doc/HW-ACCEL.md`](doc/HW-ACCEL.md) for more information.
 
 ## Documentation
 
+See [Logging](doc/logging.rst) for file output, verbosity, and environment settings.
+
 Beautiful HTML documentation can be generated using Doxygen.
 ```
 make doc
@@ -74,9 +82,12 @@ https://github.com/OpenShot/libopenshot/issues
 - https://github.com/OpenShot/openshot-qt/ (source code for Qt client)
 - https://launchpad.net/openshot/
 
-### License
+### Copyright & License
 
-Copyright (c) 2008-2021 OpenShot Studios, LLC.
+Copyright (c) 2008-2022 OpenShot Studios, LLC. This file is part of
+OpenShot Video Editor (https://www.openshot.org), an open-source project
+dedicated to delivering high quality video editing and animation solutions
+to the world.
 
 OpenShot Library (libopenshot) is free software: you can redistribute it
 and/or modify it under the terms of the GNU Lesser General Public License
@@ -91,6 +102,6 @@ GNU Lesser General Public License for more details.
 You should have received a copy of the GNU Lesser General Public License
 along with OpenShot Library. If not, see http://www.gnu.org/licenses/.
 
-To release a closed-source product which uses libopenshot (i.e. video
+To release a commercial product which uses libopenshot (i.e. video
 editing and playback), commercial licenses are also available: contact
 sales@openshot.org for more information.
